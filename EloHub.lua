@@ -88,7 +88,7 @@ local S = {
         TryRemotes  = true,
     },
     Spin    = { Enabled = false, Power = 12000, Rot = 20000, Move = 22, Hold = true },
-    UI      = { Scale = 1, Auto = 1 },
+    UI      = { Scale = 1, Auto = 1, Pro = false },
 }
 
 local Conns   = {}
@@ -1335,6 +1335,23 @@ end
 local CloseBtn = TopButton("X", 16, Color3.fromRGB(200, 70, 70))
 local MinBtn   = TopButton("-", 54)
 
+local ModeBtn = New("TextButton", {
+    AnchorPoint            = Vector2.new(1, 0.5),
+    Position               = UDim2.new(1, -92, 0, 28),
+    Size                   = UDim2.fromOffset(88, 28),
+    BackgroundColor3       = Theme.White,
+    BackgroundTransparency = 0.25,
+    Font                   = Enum.Font.GothamBold,
+    Text                   = "Простой",
+    TextSize               = 12,
+    TextColor3             = Theme.Dark,
+    AutoButtonColor        = false,
+    ZIndex                 = 13,
+    Parent                 = TopBar,
+})
+Corner(ModeBtn, 9)
+Stroke(ModeBtn, 1.2, Theme.White, 0.1)
+
 local Sidebar = New("Frame", {
     Name                   = "Sidebar",
     Active                 = true,
@@ -1388,6 +1405,23 @@ local Content = New("Frame", {
     ZIndex                 = 12,
     Parent                 = Main,
 })
+
+local AdvList = {}
+
+local function Mark(obj, adv)
+    if adv and obj then
+        obj.Visible = S.UI.Pro and true or false
+        table.insert(AdvList, obj)
+    end
+    return obj
+end
+
+local function SetPro(v)
+    S.UI.Pro = v and true or false
+    for _, o in ipairs(AdvList) do
+        if o and o.Parent then o.Visible = S.UI.Pro end
+    end
+end
 
 local Tabs, CurrentTab = {}, nil
 
@@ -1496,7 +1530,7 @@ local function AddTab(name, icon)
         return f
     end
 
-    function API:Section(text)
+    function API:Section(text, adv)
         local l = New("TextLabel", {
             Size                   = UDim2.new(1, 0, 0, 24),
             BackgroundTransparency = 1,
@@ -1508,10 +1542,10 @@ local function AddTab(name, icon)
             ZIndex                 = 12,
             Parent                 = page,
         })
-        return l
+        return Mark(l, adv)
     end
 
-    function API:Label(text)
+    function API:Label(text, adv)
         local f = New("Frame", {
             Size                   = UDim2.new(1, 0, 0, 0),
             AutomaticSize          = Enum.AutomaticSize.Y,
@@ -1539,10 +1573,11 @@ local function AddTab(name, icon)
             ZIndex                 = 13,
             Parent                 = f,
         })
+        Mark(f, adv)
         return l
     end
 
-    function API:Toggle(text, default, callback)
+    function API:Toggle(text, default, callback, adv)
         local f = Card(40)
         New("TextLabel", {
             Size                   = UDim2.new(1, -80, 1, 0),
@@ -1609,10 +1644,11 @@ local function AddTab(name, icon)
 
         hit.MouseButton1Click:Connect(function() obj:Set(not state) end)
         if default then task.defer(function() pcall(callback, true) end) end
+        Mark(f, adv)
         return obj
     end
 
-    function API:Slider(text, min, max, default, dec, callback)
+    function API:Slider(text, min, max, default, dec, callback, adv)
         local f = Card(54)
         local title = New("TextLabel", {
             Size                   = UDim2.new(1, -80, 0, 20),
@@ -1727,10 +1763,11 @@ local function AddTab(name, icon)
         function obj:Set(v) apply(v, true) end
         function obj:Get() return value end
         if default ~= nil then task.defer(function() pcall(callback, value) end) end
+        Mark(f, adv)
         return obj
     end
 
-    function API:Dropdown(text, options, default, callback)
+    function API:Dropdown(text, options, default, callback, adv)
         local rowH   = 34
         local optH   = 30
         local holder = New("Frame", {
@@ -1863,10 +1900,11 @@ local function AddTab(name, icon)
             paint()
             return selected
         end
+        Mark(holder, adv)
         return obj
     end
 
-    function API:Button(text, callback)
+    function API:Button(text, callback, adv)
         local f = New("TextButton", {
             Size                   = UDim2.new(1, 0, 0, 38),
             BackgroundColor3       = Theme.White,
@@ -1886,10 +1924,10 @@ local function AddTab(name, icon)
             task.delay(0.12, function() Tween(f, 0.15, { BackgroundTransparency = 0.28 }) end)
             pcall(callback)
         end)
-        return f
+        return Mark(f, adv)
     end
 
-    function API:Textbox(text, placeholder, callback)
+    function API:Textbox(text, placeholder, callback, adv)
         local f = Card(44)
         New("TextLabel", {
             Size                   = UDim2.new(0.42, -13, 1, 0),
@@ -1923,6 +1961,7 @@ local function AddTab(name, icon)
         box.FocusLost:Connect(function(enter)
             if enter then pcall(callback, box.Text) end
         end)
+        Mark(f, adv)
         return box
     end
 
@@ -2508,84 +2547,57 @@ end)
 
 local Panic = {}
 
-local Home     = AddTab("Главная",   Color3.fromRGB(96, 142, 225))
-local PlayerT  = AddTab("Игрок",     Color3.fromRGB(72, 190, 205))
-local TPTab    = AddTab("Телепорт",  Color3.fromRGB(140, 130, 235))
-local VisualT  = AddTab("Визуал",    Color3.fromRGB(52, 224, 122))
-local AimT     = AddTab("Аим",       Color3.fromRGB(240, 165, 60))
-local KillT    = AddTab("Убийство",  Color3.fromRGB(255, 62, 62))
-local MiscT    = AddTab("Прочее",    Color3.fromRGB(180, 190, 210))
-local SetsT    = AddTab("Настройки", Color3.fromRGB(120, 132, 155))
+local Home    = AddTab("Главная",   Color3.fromRGB(96, 142, 225))
+local PlayerT = AddTab("Игрок",     Color3.fromRGB(72, 190, 205))
+local VisualT = AddTab("Визуал",    Color3.fromRGB(52, 224, 122))
+local CombatT = AddTab("Бой",       Color3.fromRGB(255, 62, 62))
+local FarmT   = AddTab("Фарм",      Color3.fromRGB(240, 175, 60))
+local SetsT   = AddTab("Настройки", Color3.fromRGB(120, 132, 155))
 
-Home:Section("Статус")
+local function PanicOff()
+    for _, t in ipairs(Panic) do pcall(function() t:Set(false) end) end
+    Notify("Все функции выключены", RED)
+end
+
 local RoleLabel = Home:Label("Твоя роль: <b>...</b>")
 local CoinLabel = Home:Label("Монет собрано: <b>0</b>")
 local PingLabel = Home:Label("Игроков на сервере: <b>0</b>")
 
-Home:Section("Легенда ESP")
-Home:Label('<font color="rgb(255,62,62)">УБИЙЦА</font>   <font color="rgb(58,132,255)">ШЕРИФ</font>   <font color="rgb(52,224,122)">НЕВИННЫЙ</font>')
-
 Home:Section("Быстрые действия")
+Home:Button("Убить всех (за убийцу)", function() Combat.KillAll() end)
+Home:Button("Убить убийцу (за шерифа)", function() Combat.ShootMurderer() end)
+Home:Button("ТП к убийце", function() Teleport.ToRole("Murderer") end)
 Home:Button("Сбросить персонажа", function()
+    Ragdoll.Off()
     local h = Hum(LP)
     if h then h.Health = 0 end
-    Notify("Персонаж сброшен")
 end)
-Home:Button("Выключить всё (паника)", function()
-    for _, t in ipairs(Panic) do pcall(function() t:Set(false) end) end
-    Notify("Все функции выключены", Color3.fromRGB(220, 90, 90))
-end)
-Home:Label("ПК: <b>RightShift</b> или <b>Insert</b> — открыть/закрыть меню.\nТелефон: круглая кнопка <b>E</b> (её можно перетаскивать).")
+Home:Button("Выключить всё", PanicOff)
+Home:Label('Цвета ESP: <font color="rgb(255,62,62)">убийца</font> / <font color="rgb(58,132,255)">шериф</font> / <font color="rgb(52,224,122)">невинный</font>.\nКнопка <b>Простой / Про</b> сверху прячет или показывает тонкие настройки.')
 
 PlayerT:Section("Движение")
 table.insert(Panic, PlayerT:Toggle("Спид хак", false, function(v)
     S.Speed.Enabled = v
     if not v then Speed.Reset() end
-    Notify("Спид хак: " .. (v and "ВКЛ" or "ВЫКЛ"))
 end))
 PlayerT:Slider("Скорость", 16, 250, 32, 0, function(v) S.Speed.Value = v end)
-PlayerT:Dropdown("Режим скорости", { "CFrame", "WalkSpeed" }, "CFrame", function(v)
-    S.Speed.Mode = v
-    Speed.Reset()
-end)
-PlayerT:Label("<b>CFrame</b> — мягкий сдвиг, работает с джойстиком и реже ловится античитом.\n<b>WalkSpeed</b> — классика, быстрее, но заметнее.")
-
-PlayerT:Section("Прыжок")
-table.insert(Panic, PlayerT:Toggle("Высокий прыжок", false, function(v)
-    S.Jump.Enabled = v
-    Jump.Apply()
-end))
-PlayerT:Slider("Сила прыжка", 50, 350, 50, 0, function(v)
-    S.Jump.Value = v
-    Jump.Apply()
-end)
-
-PlayerT:Section("Проходимость")
-table.insert(Panic, PlayerT:Toggle("Wallhack — проход сквозь стены", false, function(v)
-    S.Noclip.Enabled = v
-    if not v then
-        local c = Char(LP)
-        if c then
-            for _, p in ipairs(c:GetDescendants()) do
-                if p:IsA("BasePart") and p.Name ~= "HumanoidRootPart" then
-                    pcall(function() p.CanCollide = true end)
-                end
-            end
-        end
-    end
-    Notify("Wallhack: " .. (v and "ВКЛ" or "ВЫКЛ"))
-end))
-
-PlayerT:Section("Полёт")
 table.insert(Panic, PlayerT:Toggle("Полёт", false, function(v)
     S.Fly.Enabled = v
     FlyPad.Visible = v
     if v then Fly.On() else Fly.Off() end
-    Notify("Полёт: " .. (v and "ВКЛ" or "ВЫКЛ"))
 end))
 PlayerT:Slider("Скорость полёта", 20, 300, 60, 0, function(v) S.Fly.Speed = v end)
-PlayerT:Label("Направление — джойстик/WASD, высота — кнопки <b>UP / DN</b> справа (на ПК ещё Space / Ctrl).")
+table.insert(Panic, PlayerT:Toggle("Проход сквозь стены", false, function(v)
+    S.Noclip.Enabled = v
+    if not v then Noclip.Restore() end
+end))
+table.insert(Panic, PlayerT:Toggle("Высокий прыжок", false, function(v)
+    S.Jump.Enabled = v
+    Jump.Apply()
+end))
+PlayerT:Label("Высота полёта — кнопки <b>UP / DN</b> справа на экране.")
 
+PlayerT:Section("Телепорт")
 local function PlayerNames()
     local t = {}
     for _, p in ipairs(Players:GetPlayers()) do
@@ -2595,31 +2607,18 @@ local function PlayerNames()
     return t
 end
 
-TPTab:Section("Телепорт к игроку")
 local TPDrop
-TPDrop = TPTab:Dropdown("Цель", PlayerNames(), PlayerNames()[1], function(v)
+TPDrop = PlayerT:Dropdown("Игрок", PlayerNames(), PlayerNames()[1], function(v)
     S.TP.Name = v
 end)
 S.TP.Name = PlayerNames()[1]
 
-TPTab:Button("Обновить список игроков", function()
+PlayerT:Button("ТП к выбранному", function() Teleport.ByName(S.TP.Name) end)
+PlayerT:Button("ТП к убийце", function() Teleport.ToRole("Murderer") end)
+PlayerT:Button("ТП к ближайшему", function() Teleport.Nearest() end)
+PlayerT:Button("Обновить список", function()
     S.TP.Name = TPDrop:Refresh(PlayerNames())
-    Notify("Список обновлён")
 end)
-TPTab:Slider("Отступ от цели", 2, 15, 5, 1, function(v) S.TP.Offset = v end)
-TPTab:Button("ТП к выбранному", function() Teleport.ByName(S.TP.Name) end)
-
-TPTab:Section("Быстрый ТП")
-TPTab:Button("ТП к убийце", function() Teleport.ToRole("Murderer") end)
-TPTab:Button("ТП к шерифу", function() Teleport.ToRole("Sheriff") end)
-TPTab:Button("ТП к ближайшему игроку", function() Teleport.Nearest() end)
-TPTab:Button("ТП к ближайшей монете", function() Teleport.NearestCoin() end)
-
-TPTab:Section("Точка возврата")
-TPTab:Button("Сохранить позицию", function() Teleport.Save() end)
-TPTab:Button("Вернуться на позицию", function() Teleport.Back() end)
-TPTab:Label("Список обновляется сам при заходе и выходе игроков. Отступ — на сколько студов встать позади цели, лицом к ней.")
-TPTab:Label("Если после ТП отбрасывает: увеличь <b>отступ</b> до 6-8 и проверь, что в Настройках включён <b>Анти-отброс при телепорте</b> — он гасит скорость, снимает коллизии на время прыжка и придерживает персонажа при посадке.")
 
 Bind(Players.PlayerAdded, function()
     task.wait(1)
@@ -2630,165 +2629,145 @@ Bind(Players.PlayerRemoving, function()
     if TPDrop then S.TP.Name = TPDrop:Refresh(PlayerNames()) end
 end)
 
+PlayerT:Section("Тонко", true)
+PlayerT:Dropdown("Режим скорости", { "CFrame", "WalkSpeed" }, "CFrame", function(v)
+    S.Speed.Mode = v
+    Speed.Reset()
+end, true)
+PlayerT:Slider("Сила прыжка", 50, 350, 50, 0, function(v)
+    S.Jump.Value = v
+    Jump.Apply()
+end, true)
+PlayerT:Slider("Отступ при ТП к игроку", 2, 15, 5, 1, function(v) S.TP.Offset = v end, true)
+PlayerT:Button("Сохранить позицию", function() Teleport.Save() end, true)
+PlayerT:Button("Вернуться на позицию", function() Teleport.Back() end, true)
+table.insert(Panic, PlayerT:Toggle("Фейк рагдолл", false, function(v)
+    if v then Ragdoll.On() else Ragdoll.Off() end
+end, true))
+PlayerT:Label("<b>CFrame</b> — мягкий сдвиг, реже ловится античитом. <b>WalkSpeed</b> — быстрее, но заметнее.", true)
+
 VisualT:Section("ESP игроков")
 table.insert(Panic, VisualT:Toggle("Включить ESP", false, function(v)
     S.ESP.Enabled = v
     if not v then ESP.SetAll(false) end
-    Notify("ESP: " .. (v and "ВКЛ" or "ВЫКЛ"))
 end))
-VisualT:Toggle("Заливка тела (Chams)", true, function(v) S.ESP.Chams = v end)
-VisualT:Toggle("Имена", true,      function(v) S.ESP.Names = v end)
-VisualT:Toggle("Роль", true,       function(v) S.ESP.Role = v end)
-VisualT:Toggle("Дистанция", true,  function(v) S.ESP.Distance = v end)
-VisualT:Toggle("Трейсеры (линии)", false, function(v) S.ESP.Tracers = v end)
-VisualT:Slider("Дальность ESP", 100, 3000, 1200, 0, function(v) S.ESP.MaxDist = v end)
-VisualT:Label('Цвета: <font color="rgb(255,62,62)">убийца</font> / <font color="rgb(58,132,255)">шериф</font> / <font color="rgb(52,224,122)">невинный</font>. Роль определяется по ножу и револьверу, обновляется автоматически.')
+VisualT:Toggle("Имена и роли", true, function(v)
+    S.ESP.Names = v
+    S.ESP.Role  = v
+end)
+VisualT:Toggle("Дистанция", true, function(v) S.ESP.Distance = v end)
 
 VisualT:Section("Стены")
 table.insert(Panic, VisualT:Toggle("Прозрачные стены", false, function(v)
     S.Walls.Enabled = v
     if v then Walls.Enable() else Walls.Disable() end
-    Notify("Прозрачность стен: " .. (v and "ВКЛ" or "ВЫКЛ"))
 end))
-VisualT:Slider("Уровень прозрачности", 0, 1, 0.65, 2, function(v)
+VisualT:Slider("Прозрачность", 0, 1, 0.65, 2, function(v)
     S.Walls.Value = v
     Walls.Refresh()
 end)
+
+VisualT:Section("Тонко", true)
+VisualT:Toggle("Заливка тела (Chams)", true, function(v) S.ESP.Chams = v end, true)
+VisualT:Toggle("Трейсеры (линии)", false, function(v) S.ESP.Tracers = v end, true)
+VisualT:Slider("Дальность ESP", 100, 3000, 1200, 0, function(v) S.ESP.MaxDist = v end, true)
 VisualT:Button("Обновить стены (после новой карты)", function()
     if S.Walls.Enabled then Walls.Enable() Notify("Стены обновлены") end
-end)
+end, true)
 
-AimT:Section("Захват цели")
-table.insert(Panic, AimT:Toggle("Включить AIM", false, function(v)
+CombatT:Section("Аим")
+table.insert(Panic, CombatT:Toggle("Включить AIM", false, function(v)
     S.Aim.Enabled = v
     if not v then S.Aim.Target = nil end
-    Notify("AIM: " .. (v and "ВКЛ" or "ВЫКЛ"))
 end))
-AimT:Dropdown("Приоритет цели",
-    { "Авто (по роли)", "Только убийца", "Только шериф", "Любой игрок" },
+CombatT:Dropdown("Цель", { "Авто (по роли)", "Только убийца", "Только шериф", "Любой игрок" },
     "Авто (по роли)", function(v) S.Aim.Mode = v S.Aim.Target = nil end)
-AimT:Dropdown("Точка прицеливания", { "Head", "HumanoidRootPart" }, "Head",
-    function(v) S.Aim.Part = v end)
+CombatT:Slider("Жёсткость лока", 0.05, 1, 0.35, 2, function(v) S.Aim.Smooth = v end)
+CombatT:Slider("Радиус захвата", 30, 700, 150, 0, function(v) S.Aim.FOV = v end)
+CombatT:Slider("Дальность захвата", 50, 2000, 400, 0, function(v) S.Aim.Dist = v end)
+CombatT:Label("Ты убийца — цели шериф и невинные. Ты шериф — только убийца. Увёл камеру в сторону — цель отпускается.")
 
-AimT:Section("Настройка")
-AimT:Slider("Жёсткость лока (1 = хард)", 0.05, 1, 0.35, 2, function(v) S.Aim.Smooth = v end)
-AimT:Slider("Дальность захвата (studs)", 50, 2000, 400, 0, function(v) S.Aim.Dist = v end)
-AimT:Slider("Площадь захвата (радиус, px)", 30, 700, 150, 0, function(v) S.Aim.FOV = v end)
-AimT:Slider("Радиус срыва цели (px)", 60, 1000, 300, 0, function(v) S.Aim.LoseFOV = v end)
-AimT:Slider("Чувствительность срыва", 20, 400, 90, 0, function(v) S.Aim.Unlock = v end)
-AimT:Toggle("Показывать круг захвата", true, function(v) S.Aim.ShowFOV = v end)
-AimT:Toggle("Только видимые цели", false, function(v) S.Aim.VisCheck = v end)
-
-AimT:Section("Как работает")
-AimT:Label("Цель ловится, если она внутри круга захвата и ближе дальности. Пока цель держится — камера жёстко ведёт её.\nЕсли <b>отвести камеру</b> (свайп по правой половине экрана / мышь) сильнее чувствительности срыва — цель отпускается.")
-AimT:Label("Авто-режим: ты <font color=\"rgb(255,62,62)\">убийца</font> → цели шериф и невинные. Ты <font color=\"rgb(58,132,255)\">шериф</font> → только убийца. Ты невинный → убийца.")
-
-KillT:Section("За убийцу (нож)")
-KillT:Button("Убить всех (кил-олл)", function() Combat.KillAll() end)
-table.insert(Panic, KillT:Toggle("Авто-убийство всех", false, function(v)
+CombatT:Section("Убийство")
+CombatT:Button("Убить всех (нож)", function() Combat.KillAll() end)
+table.insert(Panic, CombatT:Toggle("Авто-убийство всех", false, function(v)
     S.Kill.AutoMurder = v
     if not v then Combat.Stop() end
-    Notify("Авто-килл (убийца): " .. (v and "ВКЛ" or "ВЫКЛ"), v and S.ESP.Colors.Murderer or nil)
 end))
-KillT:Slider("Задержка удара", 0.05, 1, 0.2, 2, function(v) S.Kill.Delay = v end)
-KillT:Slider("Ударов по цели", 1, 8, 2, 0, function(v) S.Kill.Hits = v end)
-
-KillT:Section("За шерифа (револьвер)")
-KillT:Button("Убить убийцу", function() Combat.ShootMurderer() end)
-table.insert(Panic, KillT:Toggle("Авто-убийство мардера", false, function(v)
+CombatT:Button("Убить убийцу (револьвер)", function() Combat.ShootMurderer() end)
+table.insert(Panic, CombatT:Toggle("Авто-убийство мардера", false, function(v)
     S.Kill.AutoSheriff = v
-    Notify("Авто-килл (шериф): " .. (v and "ВКЛ" or "ВЫКЛ"), v and S.ESP.Colors.Sheriff or nil)
 end))
-KillT:Toggle("Телепорт к цели перед выстрелом", false, function(v) S.Kill.TPShot = v end)
-KillT:Slider("Дистанция выстрела", 3, 40, 8, 0, function(v) S.Kill.ShotDist = v end)
-
-KillT:Section("Общее")
-KillT:Toggle("Возвращаться на своё место", true, function(v) S.Kill.Return = v end)
-KillT:Slider("Пауза авто-режима", 0.2, 5, 1, 2, function(v) S.Kill.LoopDelay = v end)
-KillT:Button("СТОП (прервать кил-олл)", function()
+CombatT:Button("СТОП", function()
     Combat.Stop()
-    Notify("Остановлено", Color3.fromRGB(220, 90, 90))
+    Notify("Остановлено", RED)
 end)
-KillT:Toggle("Пробовать все ремоуты оружия", true, function(v) S.Kill.TryRemotes = v end)
-local ToolDiag = KillT:Label("Если выстрел не проходит — нажми «Тест оружия» и пришли мне этот список.")
-KillT:Button("Тест оружия", function()
-    ToolDiag.Text = Combat.ToolInfo()
-    Notify("Структура оружия выведена ниже")
-end)
-KillT:Label("Кил-олл работает только когда ты <b>убийца</b>: телепорт к каждому и удар ножом. Авто-режим за <b>шерифа</b> наводит револьвер на мардера, дёргает ремоут выстрела и жмёт Activate.")
 
-KillT:Section("Мега-крутилка")
-table.insert(Panic, KillT:Toggle("Мега-крутилка (отбрасывает игроков)", false, function(v)
+CombatT:Section("Крутилка")
+table.insert(Panic, CombatT:Toggle("Мега-крутилка", false, function(v)
     S.Spin.Enabled = v
     if v then Spin.On() else Spin.Off() end
-    Notify("Крутилка: " .. (v and "ВКЛ" or "ВЫКЛ"))
 end))
-KillT:Slider("Сила отброса", 1000, 60000, 12000, 0, function(v) S.Spin.Power = v end)
-KillT:Slider("Скорость вращения", 2000, 80000, 20000, 0, function(v) S.Spin.Rot = v end)
-KillT:Slider("Скорость ходьбы в крутилке", 5, 80, 22, 0, function(v) S.Spin.Move = v end)
-KillT:Toggle("Держать позицию (не улетать самому)", true, function(v) S.Spin.Hold = v end)
-KillT:Label("Персонаж бешено крутится: любого, кто подойдёт вплотную, выбрасывает за карту. Держи опцию «не улетать самому» включённой, иначе улетишь вместе с ним.")
+CombatT:Slider("Сила отброса", 1000, 60000, 12000, 0, function(v) S.Spin.Power = v end)
+CombatT:Toggle("Не улетать самому", true, function(v) S.Spin.Hold = v end)
 
-MiscT:Section("Монеты (" .. CONFIG.CoinName .. " в " .. CONFIG.CoinFolder .. ")")
-table.insert(Panic, MiscT:Toggle("Авто-сбор монет", false, function(v)
+CombatT:Section("Тонко", true)
+CombatT:Dropdown("Точка прицеливания", { "Head", "HumanoidRootPart" }, "Head",
+    function(v) S.Aim.Part = v end, true)
+CombatT:Slider("Радиус срыва цели", 60, 1000, 300, 0, function(v) S.Aim.LoseFOV = v end, true)
+CombatT:Slider("Чувствительность срыва", 20, 400, 90, 0, function(v) S.Aim.Unlock = v end, true)
+CombatT:Toggle("Показывать круг захвата", true, function(v) S.Aim.ShowFOV = v end, true)
+CombatT:Toggle("Только видимые цели", false, function(v) S.Aim.VisCheck = v end, true)
+CombatT:Slider("Задержка удара", 0.05, 1, 0.2, 2, function(v) S.Kill.Delay = v end, true)
+CombatT:Slider("Ударов по цели", 1, 8, 2, 0, function(v) S.Kill.Hits = v end, true)
+CombatT:Slider("Пауза авто-режима", 0.2, 5, 1, 2, function(v) S.Kill.LoopDelay = v end, true)
+CombatT:Toggle("Возвращаться на место", true, function(v) S.Kill.Return = v end, true)
+CombatT:Toggle("ТП к цели перед выстрелом", false, function(v) S.Kill.TPShot = v end, true)
+CombatT:Slider("Дистанция выстрела", 3, 40, 8, 0, function(v) S.Kill.ShotDist = v end, true)
+CombatT:Toggle("Пробовать все ремоуты оружия", true, function(v) S.Kill.TryRemotes = v end, true)
+CombatT:Slider("Скорость вращения", 2000, 80000, 20000, 0, function(v) S.Spin.Rot = v end, true)
+CombatT:Slider("Ходьба в крутилке", 5, 80, 22, 0, function(v) S.Spin.Move = v end, true)
+local ToolDiag = CombatT:Label("Если выстрел не проходит — нажми «Тест оружия».", true)
+CombatT:Button("Тест оружия", function()
+    ToolDiag.Text = Combat.ToolInfo()
+    Notify("Структура оружия выведена ниже")
+end, true)
+
+FarmT:Section("Монеты")
+table.insert(Panic, FarmT:Toggle("Авто-сбор монет", false, function(v)
     S.Coins.Enabled = v
-    Notify("Авто-сбор монет: " .. (v and "ВКЛ" or "ВЫКЛ"))
 end))
-MiscT:Slider("Радиус сбора", 50, 2000, 400, 0, function(v) S.Coins.Radius = v end)
-MiscT:Slider("Задержка между монетами", 0.02, 1, 0.12, 2, function(v) S.Coins.Delay = v end)
-MiscT:Dropdown("Способ сбора", { "Авто", "Касание", "Полёт", "Телепорт" }, "Авто", function(v)
+FarmT:Dropdown("Способ", { "Авто", "Касание", "Полёт", "Телепорт" }, "Авто", function(v)
     S.Coins.Mode = v
     S.Coins.Teleport = (v == "Телепорт")
 end)
-MiscT:Slider("Скорость полёта к монете", 40, 400, 120, 0, function(v) S.Coins.FlySpeed = v end)
-MiscT:Slider("Лимит времени на монету", 1, 8, 3, 1, function(v) S.Coins.FlyTimeout = v end)
-MiscT:Toggle("Возвращаться на место после сбора", true, function(v) S.Coins.Return = v end)
-local CoinLabel2 = MiscT:Label("Собрано за сессию: <b>0</b>")
-local CoinDiag = MiscT:Label("Если монеты не собираются — нажми «Тест монет»: покажет, что скрипт реально видит на карте.")
-MiscT:Button("Тест монет", function()
+FarmT:Slider("Радиус сбора", 50, 2000, 400, 0, function(v) S.Coins.Radius = v end)
+FarmT:Button("ТП к ближайшей монете", function() Teleport.NearestCoin() end)
+local CoinLabel2 = FarmT:Label("Собрано за сессию: <b>0</b>")
+
+FarmT:Section("Тонко", true)
+FarmT:Slider("Скорость полёта к монете", 40, 400, 120, 0, function(v) S.Coins.FlySpeed = v end, true)
+FarmT:Slider("Лимит времени на монету", 1, 8, 3, 1, function(v) S.Coins.FlyTimeout = v end, true)
+FarmT:Slider("Задержка между монетами", 0.02, 1, 0.12, 2, function(v) S.Coins.Delay = v end, true)
+FarmT:Toggle("Возвращаться на место", true, function(v) S.Coins.Return = v end, true)
+local CoinDiag = FarmT:Label("Не собирает — нажми «Тест монет».", true)
+FarmT:Button("Тест монет", function()
     local d = Coins.Diagnose()
-    CoinDiag.Text = "Папка: <b>" .. d.path .. "</b>\nЧастей всего: <b>" .. d.total
-        .. "</b>, в радиусе: <b>" .. d.near .. "</b>, с TouchTransmitter: <b>" .. d.touchable
+    CoinDiag.Text = "Папка: <b>" .. d.path .. "</b>\nЧастей: <b>" .. d.total
+        .. "</b>, рядом: <b>" .. d.near .. "</b>, touch: <b>" .. d.touchable
         .. "</b>\nfiretouchinterest: <b>" .. (d.firetouch and "есть" or "нет") .. "</b>"
     Notify("Монет: " .. d.total .. ", рядом: " .. d.near, d.total > 0 and nil or RED)
-end)
-MiscT:Label(firetouch and "Метод <b>Касание</b> доступен: монеты берутся на месте, без движения."
-                       or "В этом эксплойте нет <b>firetouchinterest</b> — работает режим <b>Полёт</b>.")
-MiscT:Label("<b>Полёт</b> — персонаж плавно летит к каждой монете сквозь стены (ноклип включается сам на время полёта) и возвращается назад. <b>Телепорт</b> — мгновенный рывок, ловится античитом чаще.")
-
-MiscT:Section("Тело")
-table.insert(Panic, MiscT:Toggle("Фейк рагдолл", false, function(v)
-    if v then Ragdoll.On() else Ragdoll.Off() end
-    Notify("Фейк рагдолл: " .. (v and "ВКЛ" or "ВЫКЛ"))
-end))
-MiscT:Label("Оставляет на месте «тело», а твой персонаж становится невидимым для тебя и продолжает двигаться. Эффект локальный (виден только тебе).")
-MiscT:Button("Сбросить персонажа", function()
-    Ragdoll.Off()
-    local h = Hum(LP)
-    if h then h.Health = 0 end
-end)
+end, true)
+FarmT:Label("<b>Полёт</b> — летишь к монете сквозь стены и возвращаешься. <b>Касание</b> — берёшь на месте, если эксплойт умеет firetouchinterest.", true)
 
 SetsT:Section("Интерфейс")
 SetsT:Slider("Размер UI", 0.6, 1.6, 1, 2, function(v)
     S.UI.Scale = v
     ApplyScale()
 end)
-SetsT:Textbox("ID фона", "rbxassetid://...", function(txt)
-    txt = (txt or ""):gsub("%s+", "")
-    if txt == "" then return end
-    if not txt:match("^rbxassetid://") then txt = "rbxassetid://" .. txt:gsub("%D", "") end
-    CONFIG.BackgroundId = txt
-    BGImage.Image             = txt
-    BGImage.ImageTransparency = 0
-    BGImage.Visible           = true
-    BGSilk.Visible            = false
-    Notify("Фон обновлён")
-end)
-SetsT:Button("Вернуть стандартный фон", function()
-    CONFIG.BackgroundId = ""
-    BGImage.Visible = false
-    BGSilk.Visible  = true
-    Notify("Фон по умолчанию")
+local ProToggle
+ProToggle = SetsT:Toggle("Расширенный режим (Про)", false, function(v)
+    SetPro(v)
+    ModeBtn.Text = v and "Про" or "Простой"
 end)
 SetsT:Button("Меню по центру", function()
     Main.Position = UDim2.fromScale(0.5, 0.5)
@@ -2801,30 +2780,54 @@ SetsT:Toggle("Блокировать кик клиента", true, function(v)
         Notify("Хук кика недоступен в этом эксплойте", RED)
     end
 end)
+SetsT:Toggle("Плавный телепорт", true, function(v) S.Safe.SoftTP = v end)
+SetsT:Toggle("Анти-отброс при телепорте", true, function(v) S.Safe.AntiFling = v end)
+
+SetsT:Section("Тонко", true)
 SetsT:Toggle("Блокировать телепорт в лобби", true, function(v)
     S.Safe.BlockTP = v
     if v then Safe.Hook() end
-end)
-SetsT:Toggle("Плавный телепорт (шагами)", true, function(v) S.Safe.SoftTP = v end)
-SetsT:Toggle("Анти-отброс при телепорте", true, function(v) S.Safe.AntiFling = v end)
-SetsT:Slider("Пауза посадки", 0.02, 0.5, 0.12, 2, function(v) S.Safe.LandWait = v end)
-SetsT:Slider("Длина шага телепорта", 10, 200, 45, 0, function(v) S.Safe.TPStep = v end)
-SetsT:Slider("Пауза между шагами", 0.02, 0.3, 0.06, 2, function(v) S.Safe.StepWait = v end)
+end, true)
+SetsT:Slider("Длина шага телепорта", 10, 200, 45, 0, function(v) S.Safe.TPStep = v end, true)
+SetsT:Slider("Пауза между шагами", 0.02, 0.3, 0.06, 2, function(v) S.Safe.StepWait = v end, true)
+SetsT:Slider("Пауза посадки", 0.02, 0.5, 0.12, 2, function(v) S.Safe.LandWait = v end, true)
 SetsT:Button("Отключить локальный античит", function()
     local n = Safe.KillAntiCheat()
     Notify("Отключено скриптов: " .. n, n > 0 and nil or RED)
-end)
-SetsT:Label("Кик обычно прилетает за резкий телепорт и большую скорость. Держи <b>плавный телепорт</b> включённым, скорость до 60-80, а крутилку включай короткими включениями.")
+end, true)
+SetsT:Textbox("ID фона", "rbxassetid://...", function(txt)
+    txt = (txt or ""):gsub("%s+", "")
+    if txt == "" then return end
+    if not txt:match("^rbxassetid://") then txt = "rbxassetid://" .. txt:gsub("%D", "") end
+    CONFIG.BackgroundId = txt
+    BGImage.Image             = txt
+    BGImage.ImageTransparency = 0
+    BGImage.Visible           = true
+    BGSilk.Visible            = false
+    Notify("Фон обновлён")
+end, true)
+SetsT:Button("Вернуть стандартный фон", function()
+    CONFIG.BackgroundId = ""
+    BGImage.Visible = false
+    BGSilk.Visible  = true
+end, true)
 
 SetsT:Section("Система")
-SetsT:Button("Выключить все функции", function()
-    for _, t in ipairs(Panic) do pcall(function() t:Set(false) end) end
-    Notify("Все функции выключены", Color3.fromRGB(220, 90, 90))
-end)
+SetsT:Button("Выключить все функции", PanicOff)
 SetsT:Button("Выгрузить EloHub", function()
     if _G.EloHub_Unload then _G.EloHub_Unload() end
 end)
-SetsT:Label("<b>EloHub</b> | Murder Mystery 2 | Mobile Edition\nВсе функции клиентские. Используй на своём плейсе / приватном сервере.")
+SetsT:Label("<b>EloHub</b> | Murder Mystery 2 | Mobile Edition", true)
+
+ModeBtn.MouseButton1Click:Connect(function()
+    local v = not S.UI.Pro
+    ProToggle:Set(v, true)
+    SetPro(v)
+    ModeBtn.Text = v and "Про" or "Простой"
+    Notify(v and "Режим: Про - видны все настройки" or "Режим: Простой")
+end)
+
+SetPro(false)
 
 task.spawn(function()
     while not Unloaded do
