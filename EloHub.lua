@@ -37,7 +37,23 @@ local S = {
     },
     Speed   = { Enabled = false, Value = 32, Mode = "CFrame" },
     Jump    = { Enabled = false, Value = 50 },
-    Coins   = { Enabled = false, Radius = 400, Delay = 0.12, Teleport = false, Collected = 0 },
+    Coins   = {
+        Enabled   = false,
+        Radius    = 400,
+        Delay     = 0.12,
+        Teleport  = false,
+        Return    = true,
+        Mode      = "Авто",
+        Collected = 0,
+    },
+    Safe    = {
+        BlockKick = true,
+        BlockTP   = true,
+        KillAC    = false,
+        SoftTP    = true,
+        TPStep    = 45,
+        StepWait  = 0.06,
+    },
     Noclip  = { Enabled = false },
     Walls   = { Enabled = false, Value = 0.65 },
     Aim     = {
@@ -258,6 +274,78 @@ local function Visible(part)
     return hit == nil
 end
 
+local Safe = { hooked = false }
+
+function Safe.Hook()
+    if Safe.hooked then return true end
+    pcall(function()
+        if not (hookmetamethod and getnamecallmethod) then return end
+        local wrap = newcclosure or function(f) return f end
+        local old
+        old = hookmetamethod(game, "__namecall", wrap(function(self, ...)
+            local method = getnamecallmethod()
+            if S.Safe.BlockKick and method == "Kick" then
+                return nil
+            end
+            if S.Safe.BlockTP and (method == "Teleport"
+                or method == "TeleportToPlaceInstance"
+                or method == "TeleportToPrivateServer") then
+                return nil
+            end
+            return old(self, ...)
+        end))
+        Safe.hooked = true
+    end)
+    return Safe.hooked
+end
+
+function Safe.KillAntiCheat()
+    local n = 0
+    local roots = {
+        LP:FindFirstChild("PlayerScripts"),
+        LP:FindFirstChild("PlayerGui"),
+        Char(LP),
+    }
+    for _, root in ipairs(roots) do
+        if root then
+            for _, v in ipairs(root:GetDescendants()) do
+                if v:IsA("LocalScript") and not v.Disabled then
+                    local nm = string.lower(v.Name)
+                    if string.find(nm, "anti", 1, true)
+                    or string.find(nm, "cheat", 1, true)
+                    or string.find(nm, "exploit", 1, true)
+                    or string.find(nm, "detect", 1, true) then
+                        pcall(function() v.Disabled = true end)
+                        n = n + 1
+                    end
+                end
+            end
+        end
+    end
+    return n
+end
+
+function Safe.MoveTo(cf)
+    local hrp = HRP(LP)
+    if not hrp then return false end
+    if not S.Safe.SoftTP then
+        hrp.CFrame = cf
+        return true
+    end
+    local from  = hrp.Position
+    local to    = cf.Position
+    local rot   = cf - cf.Position
+    local dist  = (to - from).Magnitude
+    local steps = math.max(1, math.ceil(dist / math.max(S.Safe.TPStep, 5)))
+    for i = 1, steps do
+        local h = HRP(LP)
+        if not h then return false end
+        h.CFrame = CFrame.new(from:Lerp(to, i / steps)) * rot
+        if i < steps then task.wait(S.Safe.StepWait) end
+    end
+    return true
+end
+
 local GUIROOT = New("ScreenGui", {
     Name             = "EloHub",
     ResetOnSpawn     = false,
@@ -470,8 +558,21 @@ local firetouch = (typeof(firetouchinterest) == "function" and firetouchinterest
     or (syn and syn.firetouchinterest)
 
 function Coins.Container()
-    return Workspace:FindFirstChild(CONFIG.CoinFolder)
-        or Workspace:FindFirstChild("CoinContainer", true)
+    local c = Workspace:FindFirstChild(CONFIG.CoinFolder)
+    if c then return c end
+    c = Workspace:FindFirstChild(CONFIG.CoinFolder, true)
+    if c then return c end
+    for _, v in ipairs(Workspace:GetChildren()) do
+        if (v:IsA("Folder") or v:IsA("Model")) and string.find(string.lower(v.Name), "coin", 1, true) then
+            return v
+        end
+    end
+    for _, v in ipairs(Workspace:GetDescendants()) do
+        if (v:IsA("Folder") or v:IsA("Model")) and string.find(string.lower(v.Name), "coin", 1, true) then
+            return v
+        end
+    end
+    return nil
 end
 
 function Coins.PartOf(coin)
@@ -479,21 +580,90 @@ function Coins.PartOf(coin)
     return coin:FindFirstChildWhichIsA("BasePart", true)
 end
 
-function Coins.Take(part, hrp)
-    if firetouch then
+function Coins.List()
+    local cont = Coins.Container()
+    local out = {}
+    if not cont then return out, nil end
+    for _, v in ipairs(cont:GetDescendants()) do
+        if v:IsA("BasePart") then table.insert(out, v) end
+    end
+    if #out == 0 then
+        for _, v in ipairs(cont:GetChildren()) do
+            local p = Coins.PartOf(v)
+            if p then table.insert(out, p) end
+        end
+    end
+    return out, cont
+end
+
+function Coins.TouchParts()
+    local char = Char(LP)
+    local out = {}
+    if not char then return out end
+    for _, n in ipairs({ "HumanoidRootPart", "Torso", "UpperTorso", "LowerTorso",
+                         "Left Leg", "Right Leg", "LeftFoot", "RightFoot", "Head" }) do
+        local p = char:FindFirstChild(n)
+        if p and p:IsA("BasePart") then table.insert(out, p) end
+    end
+    if #out == 0 then
+        for _, p in ipairs(char:GetChildren()) do
+            if p:IsA("BasePart") then table.insert(out, p) end
+        end
+    end
+    return out
+end
+
+function Coins.Touch(part)
+    if not firetouch then return false end
+    local ok = false
+    for _, cp in ipairs(Coins.TouchParts()) do
         pcall(function()
-            firetouch(hrp, part, 0)
-            firetouch(hrp, part, 1)
+            firetouch(cp, part, 0)
+            firetouch(cp, part, 1)
+            firetouch(part, cp, 0)
+            firetouch(part, cp, 1)
+            ok = true
         end)
-        return true
-    elseif S.Coins.Teleport then
-        local old = hrp.CFrame
-        hrp.CFrame = CFrame.new(part.Position)
-        task.wait(0.06)
-        hrp.CFrame = old
+    end
+    return ok
+end
+
+function Coins.Take(part, hrp)
+    local mode = S.Coins.Mode
+    if mode == "Касание" or (mode == "Авто" and firetouch and not S.Coins.Teleport) then
+        return Coins.Touch(part)
+    end
+    if mode == "Телепорт" or S.Coins.Teleport or not firetouch then
+        local h = HRP(LP)
+        if not h then return false end
+        Safe.MoveTo(CFrame.new(part.Position + Vector3.new(0, 1.5, 0)))
+        Coins.Touch(part)
         return true
     end
     return false
+end
+
+function Coins.Diagnose()
+    local list, cont = Coins.List()
+    local hrp = HRP(LP)
+    local near = 0
+    if hrp then
+        for _, p in ipairs(list) do
+            if (p.Position - hrp.Position).Magnitude <= S.Coins.Radius then near = near + 1 end
+        end
+    end
+    local touchable = 0
+    for _, p in ipairs(list) do
+        if p:FindFirstChildOfClass("TouchTransmitter") then touchable = touchable + 1 end
+    end
+    return {
+        folder    = cont and cont.Name or "не найден",
+        path      = cont and cont:GetFullName() or "-",
+        total     = #list,
+        near      = near,
+        touchable = touchable,
+        firetouch = firetouch ~= nil,
+    }
 end
 
 function Coins.Loop()
@@ -501,20 +671,24 @@ function Coins.Loop()
         if S.Coins.Enabled then
             local ok = pcall(function()
                 local hrp = HRP(LP)
-                local cont = Coins.Container()
-                if hrp and cont then
-                    for _, coin in ipairs(cont:GetChildren()) do
+                local list = Coins.List()
+                if hrp and #list > 0 then
+                    local home = hrp.CFrame
+                    local moved = false
+                    for _, part in ipairs(list) do
                         if not S.Coins.Enabled then break end
-                        if coin.Name == CONFIG.CoinName or coin:IsA("BasePart") or coin:IsA("Model") then
-                            local part = Coins.PartOf(coin)
-                            if part and (part.Position - hrp.Position).Magnitude <= S.Coins.Radius then
-                                if Coins.Take(part, hrp) then
-                                    S.Coins.Collected = S.Coins.Collected + 1
-                                end
-                                task.wait(S.Coins.Delay)
+                        local h = HRP(LP)
+                        if not h then break end
+                        if part.Parent and (part.Position - h.Position).Magnitude <= S.Coins.Radius then
+                            if Coins.Take(part, h) then
+                                S.Coins.Collected = S.Coins.Collected + 1
+                                if S.Coins.Mode == "Телепорт" or S.Coins.Teleport then moved = true end
                             end
+                            task.wait(S.Coins.Delay)
                         end
                     end
+                    local back = HRP(LP)
+                    if moved and S.Coins.Return and back then Safe.MoveTo(home) end
                 end
             end)
             if not ok then task.wait(0.5) end
@@ -954,6 +1128,7 @@ local BASE_W, BASE_H = 648, 438
 
 local Main = New("Frame", {
     Name             = "Main",
+    Active           = true,
     AnchorPoint      = Vector2.new(0.5, 0.5),
     Position         = UDim2.fromScale(0.5, 0.5),
     Size             = UDim2.fromOffset(BASE_W, BASE_H),
@@ -982,6 +1157,7 @@ Stroke(InnerGlow, 1, Theme.White, 0.55)
 
 local TopBar = New("Frame", {
     Name                   = "TopBar",
+    Active                 = true,
     Size                   = UDim2.new(1, 0, 0, 56),
     BackgroundTransparency = 1,
     ZIndex                 = 12,
@@ -1014,7 +1190,7 @@ local SubLogo = New("TextLabel", {
     Size                   = UDim2.fromOffset(280, 14),
     BackgroundTransparency = 1,
     Font                   = Enum.Font.Gotham,
-    Text                   = "Murder Mystery 2  •  Mobile Edition",
+    Text                   = "Murder Mystery 2  |  Mobile Edition",
     TextSize               = 11,
     TextColor3             = Theme.Sub,
     TextXAlignment         = Enum.TextXAlignment.Left,
@@ -1044,11 +1220,12 @@ local function TopButton(text, offsetX, color)
     return b
 end
 
-local CloseBtn = TopButton("✕", 16, Color3.fromRGB(200, 70, 70))
-local MinBtn   = TopButton("—", 54)
+local CloseBtn = TopButton("X", 16, Color3.fromRGB(200, 70, 70))
+local MinBtn   = TopButton("-", 54)
 
 local Sidebar = New("Frame", {
     Name                   = "Sidebar",
+    Active                 = true,
     Position               = UDim2.fromOffset(14, 62),
     Size                   = UDim2.fromOffset(146, BASE_H - 76),
     BackgroundColor3       = Theme.White,
@@ -1061,6 +1238,7 @@ Corner(Sidebar, 14)
 Stroke(Sidebar, 1.4, Theme.White, 0.08)
 
 local TabList = New("ScrollingFrame", {
+    Active                 = true,
     Size                   = UDim2.new(1, -12, 1, -50),
     Position               = UDim2.fromOffset(6, 8),
     BackgroundTransparency = 1,
@@ -1109,7 +1287,10 @@ local function SelectTab(tab)
         Tween(t.label, 0.18, { TextColor3 = on and Theme.Text or Theme.Sub })
         Tween(t.bar, 0.18, { BackgroundTransparency = on and 0 or 1,
                              Size = UDim2.fromOffset(3, on and 18 or 4) })
-        t.icon.TextColor3 = on and Theme.Accent or Theme.Sub
+        Tween(t.icon, 0.18, {
+            BackgroundTransparency = on and 0 or 0.45,
+            Size                   = UDim2.fromOffset(on and 12 or 9, on and 12 or 9),
+        })
     end
     CurrentTab = tab
 end
@@ -1138,17 +1319,18 @@ local function AddTab(name, icon)
     })
     Corner(bar, 2)
 
-    local ic = New("TextLabel", {
-        Position               = UDim2.fromOffset(12, 0),
-        Size                   = UDim2.new(0, 22, 1, 0),
-        BackgroundTransparency = 1,
-        Font                   = Enum.Font.GothamBold,
-        Text                   = icon or "•",
-        TextSize               = 14,
-        TextColor3             = Theme.Sub,
+    local ic = New("Frame", {
+        AnchorPoint            = Vector2.new(0, 0.5),
+        Position               = UDim2.new(0, 14, 0.5, 0),
+        Size                   = UDim2.fromOffset(9, 9),
+        BackgroundColor3       = icon or Theme.Accent,
+        BackgroundTransparency = 0.45,
+        BorderSizePixel        = 0,
         ZIndex                 = 13,
         Parent                 = btn,
     })
+    Corner(ic, 5)
+    Stroke(ic, 1, Theme.White, 0.3)
 
     local lbl = New("TextLabel", {
         Position               = UDim2.fromOffset(36, 0),
@@ -1165,6 +1347,7 @@ local function AddTab(name, icon)
 
     local page = New("ScrollingFrame", {
         Name                   = name,
+        Active                 = true,
         Size                   = UDim2.fromScale(1, 1),
         BackgroundTransparency = 1,
         BorderSizePixel        = 0,
@@ -1489,7 +1672,7 @@ local function AddTab(name, icon)
             Size                   = UDim2.fromOffset(14, 14),
             BackgroundTransparency = 1,
             Font                   = Enum.Font.GothamBold,
-            Text                   = "▾",
+            Text                   = "v",
             TextSize               = 12,
             TextColor3             = Theme.Sub,
             ZIndex                 = 14,
@@ -1708,7 +1891,7 @@ end
 function Teleport.Back()
     local hrp = HRP(LP)
     if not hrp or not Teleport.saved then Notify("Точка не задана", RED) return end
-    hrp.CFrame = Teleport.saved
+    Safe.MoveTo(Teleport.saved)
     Notify("Возврат на точку")
 end
 
@@ -1722,7 +1905,7 @@ function Teleport.To(plr, silent)
         if not silent then Notify("Игрок недоступен", RED) end
         return false
     end
-    me.CFrame = them.CFrame * CFrame.new(0, 0, S.TP.Offset)
+    Safe.MoveTo(them.CFrame * CFrame.new(0, 0, S.TP.Offset))
     if not silent then Notify("ТП к " .. plr.Name, RoleColor(GetRole(plr))) end
     return true
 end
@@ -1776,7 +1959,7 @@ function Teleport.NearestCoin()
         end
     end
     if not best then Notify("Монеты не найдены", RED) return end
-    me.CFrame = CFrame.new(best.Position + Vector3.new(0, 2, 0))
+    Safe.MoveTo(CFrame.new(best.Position + Vector3.new(0, 2, 0)))
     Notify("ТП к монете (" .. math.floor(bd) .. "m)")
 end
 
@@ -1857,7 +2040,7 @@ function Combat.KillAll()
                     if not Combat.busy then break end
                     local a, b = HRP(LP), HRP(plr)
                     if not a or not b then break end
-                    a.CFrame = b.CFrame * CFrame.new(0, 0, -1.5)
+                    Safe.MoveTo(b.CFrame * CFrame.new(0, 0, -1.5))
                     SwingAt(knife, plr)
                     task.wait(S.Kill.Delay)
                     if not Alive(plr) then break end
@@ -1866,7 +2049,7 @@ function Combat.KillAll()
             end
         end
         local back = HRP(LP)
-        if S.Kill.Return and start and back then back.CFrame = start end
+        if S.Kill.Return and start and back then Safe.MoveTo(start) end
         Combat.busy = false
         Notify("Кил-олл: убито " .. killed)
     end)
@@ -1893,7 +2076,7 @@ function Combat.ShootMurderer(silent)
 
     local start = me.CFrame
     if S.Kill.TPShot then
-        me.CFrame = part.CFrame * CFrame.new(0, 0, S.Kill.ShotDist)
+        Safe.MoveTo(part.CFrame * CFrame.new(0, 0, S.Kill.ShotDist))
         task.wait(0.08)
     end
     Camera.CFrame = CFrame.lookAt(Camera.CFrame.Position, part.Position)
@@ -1909,7 +2092,7 @@ function Combat.ShootMurderer(silent)
     if S.Kill.TPShot and S.Kill.Return then
         task.wait(0.2)
         local back = HRP(LP)
-        if back then back.CFrame = start end
+        if back then Safe.MoveTo(start) end
     end
     if not silent then Notify("Выстрел по " .. m.Name, S.ESP.Colors.Murderer) end
 end
@@ -2014,7 +2197,7 @@ local function PadButton(txt, y, onDown, onUp)
         BackgroundTransparency = 0.25,
         Font                   = Enum.Font.GothamBold,
         Text                   = txt,
-        TextSize               = 20,
+        TextSize               = 15,
         TextColor3             = Theme.Text,
         AutoButtonColor        = false,
         ZIndex                 = 21,
@@ -2039,8 +2222,8 @@ local function PadButton(txt, y, onDown, onUp)
     return b
 end
 
-PadButton("▲", 0,  function() Fly.up = true end,   function() Fly.up = false end)
-PadButton("▼", 70, function() Fly.down = true end, function() Fly.down = false end)
+PadButton("UP", 0,  function() Fly.up = true end,   function() Fly.up = false end)
+PadButton("DN", 70, function() Fly.down = true end, function() Fly.down = false end)
 
 local OpenBtn = New("TextButton", {
     Name                   = "EloOpen",
@@ -2134,14 +2317,14 @@ end)
 
 local Panic = {}
 
-local Home     = AddTab("Главная",   "◆")
-local PlayerT  = AddTab("Игрок",     "◈")
-local TPTab    = AddTab("Телепорт",  "➤")
-local VisualT  = AddTab("Визуал",    "◉")
-local AimT     = AddTab("Аим",       "✛")
-local KillT    = AddTab("Убийство",  "☠")
-local MiscT    = AddTab("Прочее",    "✦")
-local SetsT    = AddTab("Настройки", "⚙")
+local Home     = AddTab("Главная",   Color3.fromRGB(96, 142, 225))
+local PlayerT  = AddTab("Игрок",     Color3.fromRGB(72, 190, 205))
+local TPTab    = AddTab("Телепорт",  Color3.fromRGB(140, 130, 235))
+local VisualT  = AddTab("Визуал",    Color3.fromRGB(52, 224, 122))
+local AimT     = AddTab("Аим",       Color3.fromRGB(240, 165, 60))
+local KillT    = AddTab("Убийство",  Color3.fromRGB(255, 62, 62))
+local MiscT    = AddTab("Прочее",    Color3.fromRGB(180, 190, 210))
+local SetsT    = AddTab("Настройки", Color3.fromRGB(120, 132, 155))
 
 Home:Section("Статус")
 local RoleLabel = Home:Label("Твоя роль: <b>...</b>")
@@ -2149,7 +2332,7 @@ local CoinLabel = Home:Label("Монет собрано: <b>0</b>")
 local PingLabel = Home:Label("Игроков на сервере: <b>0</b>")
 
 Home:Section("Легенда ESP")
-Home:Label('<font color="rgb(255,62,62)">■ УБИЙЦА</font>   <font color="rgb(58,132,255)">■ ШЕРИФ</font>   <font color="rgb(52,224,122)">■ НЕВИННЫЙ</font>')
+Home:Label('<font color="rgb(255,62,62)">УБИЙЦА</font>   <font color="rgb(58,132,255)">ШЕРИФ</font>   <font color="rgb(52,224,122)">НЕВИННЫЙ</font>')
 
 Home:Section("Быстрые действия")
 Home:Button("Сбросить персонажа", function()
@@ -2210,7 +2393,7 @@ table.insert(Panic, PlayerT:Toggle("Полёт", false, function(v)
     Notify("Полёт: " .. (v and "ВКЛ" or "ВЫКЛ"))
 end))
 PlayerT:Slider("Скорость полёта", 20, 300, 60, 0, function(v) S.Fly.Speed = v end)
-PlayerT:Label("Направление — джойстик/WASD, высота — кнопки <b>▲ ▼</b> справа (на ПК ещё Space / Ctrl).")
+PlayerT:Label("Направление — джойстик/WASD, высота — кнопки <b>UP / DN</b> справа (на ПК ещё Space / Ctrl).")
 
 local function PlayerNames()
     local t = {}
@@ -2355,10 +2538,22 @@ table.insert(Panic, MiscT:Toggle("Авто-сбор монет", false, function
 end))
 MiscT:Slider("Радиус сбора", 50, 2000, 400, 0, function(v) S.Coins.Radius = v end)
 MiscT:Slider("Задержка между монетами", 0.02, 1, 0.12, 2, function(v) S.Coins.Delay = v end)
-MiscT:Toggle("Телепорт-режим (если нет firetouchinterest)", false, function(v) S.Coins.Teleport = v end)
+MiscT:Dropdown("Способ сбора", { "Авто", "Касание", "Телепорт" }, "Авто", function(v)
+    S.Coins.Mode = v
+    S.Coins.Teleport = (v == "Телепорт")
+end)
+MiscT:Toggle("Возвращаться на место после сбора", true, function(v) S.Coins.Return = v end)
 local CoinLabel2 = MiscT:Label("Собрано за сессию: <b>0</b>")
-MiscT:Label(firetouch and "Метод: <b>firetouchinterest</b> — монеты собираются без телепорта."
-                       or "В твоём эксплойте нет <b>firetouchinterest</b> — включи телепорт-режим.")
+local CoinDiag = MiscT:Label("Если монеты не собираются — нажми «Тест монет»: покажет, что скрипт реально видит на карте.")
+MiscT:Button("Тест монет", function()
+    local d = Coins.Diagnose()
+    CoinDiag.Text = "Папка: <b>" .. d.path .. "</b>\nЧастей всего: <b>" .. d.total
+        .. "</b>, в радиусе: <b>" .. d.near .. "</b>, с TouchTransmitter: <b>" .. d.touchable
+        .. "</b>\nfiretouchinterest: <b>" .. (d.firetouch and "есть" or "нет") .. "</b>"
+    Notify("Монет: " .. d.total .. ", рядом: " .. d.near, d.total > 0 and nil or RED)
+end)
+MiscT:Label(firetouch and "Метод <b>Касание</b> доступен: монеты берутся без телепорта."
+                       or "В этом эксплойте нет <b>firetouchinterest</b> — выбери способ <b>Телепорт</b>.")
 
 MiscT:Section("Тело")
 table.insert(Panic, MiscT:Toggle("Фейк рагдолл", false, function(v)
@@ -2398,6 +2593,26 @@ SetsT:Button("Меню по центру", function()
     Main.Position = UDim2.fromScale(0.5, 0.5)
 end)
 
+SetsT:Section("Анти-кик")
+SetsT:Toggle("Блокировать кик клиента", true, function(v)
+    S.Safe.BlockKick = v
+    if v and not Safe.Hook() then
+        Notify("Хук кика недоступен в этом эксплойте", RED)
+    end
+end)
+SetsT:Toggle("Блокировать телепорт в лобби", true, function(v)
+    S.Safe.BlockTP = v
+    if v then Safe.Hook() end
+end)
+SetsT:Toggle("Плавный телепорт (шагами)", true, function(v) S.Safe.SoftTP = v end)
+SetsT:Slider("Длина шага телепорта", 10, 200, 45, 0, function(v) S.Safe.TPStep = v end)
+SetsT:Slider("Пауза между шагами", 0.02, 0.3, 0.06, 2, function(v) S.Safe.StepWait = v end)
+SetsT:Button("Отключить локальный античит", function()
+    local n = Safe.KillAntiCheat()
+    Notify("Отключено скриптов: " .. n, n > 0 and nil or RED)
+end)
+SetsT:Label("Кик обычно прилетает за резкий телепорт и большую скорость. Держи <b>плавный телепорт</b> включённым, скорость до 60-80, а крутилку включай короткими включениями.")
+
 SetsT:Section("Система")
 SetsT:Button("Выключить все функции", function()
     for _, t in ipairs(Panic) do pcall(function() t:Set(false) end) end
@@ -2406,7 +2621,7 @@ end)
 SetsT:Button("Выгрузить EloHub", function()
     if _G.EloHub_Unload then _G.EloHub_Unload() end
 end)
-SetsT:Label("<b>EloHub</b> • Murder Mystery 2 • Mobile Edition\nВсе функции клиентские. Используй на своём плейсе / приватном сервере.")
+SetsT:Label("<b>EloHub</b> | Murder Mystery 2 | Mobile Edition\nВсе функции клиентские. Используй на своём плейсе / приватном сервере.")
 
 task.spawn(function()
     while not Unloaded do
@@ -2551,9 +2766,16 @@ _G.EloHub_Unload = function()
     _G.EloHub_Unload = nil
 end
 
+if S.Safe.BlockKick or S.Safe.BlockTP then Safe.Hook() end
+
 PlayIntro(function()
     SetMenu(true)
     Notify("EloHub загружен", Theme.Accent)
+    if not Safe.hooked then
+        task.delay(1.2, function()
+            Notify("Анти-кик недоступен: нет hookmetamethod", RED)
+        end)
+    end
 end)
 
 pcall(function()
