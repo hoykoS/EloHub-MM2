@@ -55,6 +55,8 @@ local S = {
         SoftTP    = true,
         TPStep    = 45,
         StepWait  = 0.06,
+        AntiFling = true,
+        LandWait  = 0.12,
     },
     Noclip  = { Enabled = false },
     Walls   = { Enabled = false, Value = 0.65 },
@@ -73,7 +75,7 @@ local S = {
     },
     Fly     = { Enabled = false, Speed = 60 },
     Ragdoll = { Active = false },
-    TP      = { Name = nil, Offset = 3 },
+    TP      = { Name = nil, Offset = 5 },
     Kill    = {
         Delay       = 0.2,
         Hits        = 2,
@@ -328,24 +330,71 @@ function Safe.KillAntiCheat()
     return n
 end
 
+function Safe.Freeze(h)
+    if not h then return end
+    pcall(function()
+        h.AssemblyLinearVelocity  = Vector3.zero
+        h.AssemblyAngularVelocity = Vector3.zero
+    end)
+    pcall(function()
+        h.Velocity    = Vector3.zero
+        h.RotVelocity = Vector3.zero
+    end)
+end
+
+function Safe.Ghost(sec)
+    Safe.ghostUntil = math.max(Safe.ghostUntil or 0, os.clock() + (sec or 0.4))
+end
+
+function Safe.Land()
+    local h = HRP(LP)
+    if not h then return end
+    Safe.Freeze(h)
+    if not S.Safe.AntiFling then
+        Safe.ghostUntil = 0
+        return
+    end
+    local was = h.Anchored
+    h.Anchored = true
+    Safe.Freeze(h)
+    task.wait(S.Safe.LandWait)
+    Safe.ghostUntil = 0
+    task.wait(0.05)
+    local h2 = HRP(LP)
+    if h2 then
+        Safe.Freeze(h2)
+        h2.Anchored = was
+        Safe.Freeze(h2)
+    end
+end
+
 function Safe.MoveTo(cf)
     local hrp = HRP(LP)
     if not hrp then return false end
+    local total = (cf.Position - hrp.Position).Magnitude
+
+    if S.Safe.AntiFling then Safe.Ghost(0.6 + total / 500) end
+
     if not S.Safe.SoftTP then
         hrp.CFrame = cf
+        Safe.Freeze(hrp)
+        Safe.Land()
         return true
     end
+
     local from  = hrp.Position
     local to    = cf.Position
     local rot   = cf - cf.Position
-    local dist  = (to - from).Magnitude
-    local steps = math.max(1, math.ceil(dist / math.max(S.Safe.TPStep, 5)))
+    local steps = math.max(1, math.ceil(total / math.max(S.Safe.TPStep, 5)))
     for i = 1, steps do
         local h = HRP(LP)
         if not h then return false end
         h.CFrame = CFrame.new(from:Lerp(to, i / steps)) * rot
+        Safe.Freeze(h)
+        if S.Safe.AntiFling then Safe.Ghost(0.5) end
         if i < steps then task.wait(S.Safe.StepWait) end
     end
+    Safe.Land()
     return true
 end
 
@@ -645,12 +694,12 @@ function Coins.FlyToPos(goal, timeout, part)
         local dt   = task.wait()
         local step = math.min(S.Coins.FlySpeed * dt, dist)
         h.CFrame  = CFrame.new(h.Position + delta.Unit * step)
-        h.Velocity = Vector3.zero
+        Safe.Freeze(h)
         if part then Coins.Touch(part) end
     end
     Coins.flying = false
     local h = HRP(LP)
-    if h then h.Velocity = Vector3.zero end
+    Safe.Freeze(h)
     return true
 end
 
@@ -739,9 +788,30 @@ function Coins.Loop()
     end
 end
 
-local Noclip = {}
+local Noclip = { ghosting = false }
+
+function Noclip.Restore()
+    local char = Char(LP)
+    if not char then return end
+    for _, p in ipairs(char:GetDescendants()) do
+        if p:IsA("BasePart") and p.Name ~= "HumanoidRootPart" then
+            pcall(function() p.CanCollide = true end)
+        end
+    end
+end
+
 function Noclip.Step()
-    if not S.Noclip.Enabled and not Coins.flying then return end
+    local ghost = S.Noclip.Enabled
+        or Coins.flying
+        or os.clock() < (Safe.ghostUntil or 0)
+    if not ghost then
+        if Noclip.ghosting then
+            Noclip.ghosting = false
+            Noclip.Restore()
+        end
+        return
+    end
+    Noclip.ghosting = true
     local char = Char(LP)
     if not char then return end
     for _, p in ipairs(char:GetDescendants()) do
@@ -1947,7 +2017,12 @@ function Teleport.To(plr, silent)
         if not silent then Notify("Игрок недоступен", RED) end
         return false
     end
-    Safe.MoveTo(them.CFrame * CFrame.new(0, 0, S.TP.Offset))
+    local base = them.CFrame
+    local look = Vector3.new(base.LookVector.X, 0, base.LookVector.Z)
+    if look.Magnitude < 0.05 then look = Vector3.new(0, 0, -1) end
+    look = look.Unit
+    local spot = base.Position - look * math.max(S.TP.Offset, 2) + Vector3.new(0, 0.6, 0)
+    Safe.MoveTo(CFrame.lookAt(spot, spot + look))
     if not silent then Notify("ТП к " .. plr.Name, RoleColor(GetRole(plr))) end
     return true
 end
@@ -2531,7 +2606,7 @@ TPTab:Button("Обновить список игроков", function()
     S.TP.Name = TPDrop:Refresh(PlayerNames())
     Notify("Список обновлён")
 end)
-TPTab:Slider("Отступ от цели", 0, 15, 3, 1, function(v) S.TP.Offset = v end)
+TPTab:Slider("Отступ от цели", 2, 15, 5, 1, function(v) S.TP.Offset = v end)
 TPTab:Button("ТП к выбранному", function() Teleport.ByName(S.TP.Name) end)
 
 TPTab:Section("Быстрый ТП")
@@ -2543,7 +2618,8 @@ TPTab:Button("ТП к ближайшей монете", function() Teleport.Near
 TPTab:Section("Точка возврата")
 TPTab:Button("Сохранить позицию", function() Teleport.Save() end)
 TPTab:Button("Вернуться на позицию", function() Teleport.Back() end)
-TPTab:Label("Список обновляется сам при заходе и выходе игроков. Отступ — на сколько студов встать позади цели.")
+TPTab:Label("Список обновляется сам при заходе и выходе игроков. Отступ — на сколько студов встать позади цели, лицом к ней.")
+TPTab:Label("Если после ТП отбрасывает: увеличь <b>отступ</b> до 6-8 и проверь, что в Настройках включён <b>Анти-отброс при телепорте</b> — он гасит скорость, снимает коллизии на время прыжка и придерживает персонажа при посадке.")
 
 Bind(Players.PlayerAdded, function()
     task.wait(1)
@@ -2730,6 +2806,8 @@ SetsT:Toggle("Блокировать телепорт в лобби", true, func
     if v then Safe.Hook() end
 end)
 SetsT:Toggle("Плавный телепорт (шагами)", true, function(v) S.Safe.SoftTP = v end)
+SetsT:Toggle("Анти-отброс при телепорте", true, function(v) S.Safe.AntiFling = v end)
+SetsT:Slider("Пауза посадки", 0.02, 0.5, 0.12, 2, function(v) S.Safe.LandWait = v end)
 SetsT:Slider("Длина шага телепорта", 10, 200, 45, 0, function(v) S.Safe.TPStep = v end)
 SetsT:Slider("Пауза между шагами", 0.02, 0.3, 0.06, 2, function(v) S.Safe.StepWait = v end)
 SetsT:Button("Отключить локальный античит", function()
