@@ -1,33 +1,8 @@
---[[
-========================================================================
-    ______ _        _   _       _
-   |  ____| |      | | | |     | |
-   | |__  | | ___  | |_| |_   _| |__
-   |  __| | |/ _ \ |  _  | | | | '_ \
-   | |____| | (_) || | | | |_| | |_) |
-   |______|_|\___/ |_| |_|\__,_|_.__/
-
-   EloHub  |  Murder Mystery 2  |  Mobile Edition
-   Один файл, без внешних зависимостей.
-
-   Запуск:
-      loadstring(game:HttpGet("ССЫЛКА_НА_RAW_ФАЙЛ"))()
-
-   Полностью адаптировано под телефон:
-      * все элементы кликабельные пальцем (высота строк >= 34px)
-      * перетаскивание меню и кнопки открытия через Touch
-      * авто-масштаб под размер экрана + ручной ползунок размера UI
-      * никаких Drawing / mousemoverel — только GUI и Camera.CFrame
-========================================================================
-]]
-
---========================= ЗАЩИТА ОТ ДУБЛЯ ============================
 if _G.EloHub_Unload then
     pcall(_G.EloHub_Unload)
     task.wait(0.15)
 end
 
---============================ СЕРВИСЫ =================================
 local Players           = game:GetService("Players")
 local RunService        = game:GetService("RunService")
 local UserInputService   = game:GetService("UserInputService")
@@ -39,18 +14,12 @@ local HttpService       = game:GetService("HttpService")
 local LP     = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
 
---============================ КОНФИГ ==================================
--- Сюда можно вставить ID своей картинки-фона (то самое фото с белыми волнами).
--- Загрузи фото в Roblox (Create -> Decals), возьми ID и впиши ниже,
--- либо вставь его прямо в меню: Настройки -> ID фона.
--- Если оставить пустым — рисуется процедурный фон "белый шёлк".
 local CONFIG = {
-    BackgroundId = "",           -- напр. "rbxassetid://1234567890"
+    BackgroundId = "",
     CoinFolder   = "CoinContainer",
     CoinName     = "Coin_Server",
 }
 
---============================ СОСТОЯНИЕ ===============================
 local S = {
     ESP = {
         Enabled  = false,
@@ -75,22 +44,34 @@ local S = {
         Enabled   = false,
         Mode      = "Авто (по роли)",
         Part      = "Head",
-        Smooth    = 0.35,   -- 1 = жёсткий лок
-        Dist      = 400,    -- дальность захвата (studs)
-        FOV       = 150,    -- площадь захвата (радиус в пикселях)
-        LoseFOV   = 300,    -- радиус срыва цели
-        Unlock    = 90,     -- чувствительность срыва при отводе камеры
+        Smooth    = 0.35,
+        Dist      = 400,
+        FOV       = 150,
+        LoseFOV   = 300,
+        Unlock    = 90,
         ShowFOV   = true,
-        VisCheck  = false,  -- только видимые цели
+        VisCheck  = false,
         Target    = nil,
     },
     Fly     = { Enabled = false, Speed = 60 },
     Ragdoll = { Active = false },
+    TP      = { Name = nil, Offset = 3 },
+    Kill    = {
+        Delay       = 0.2,
+        Hits        = 2,
+        Return      = true,
+        TPShot      = false,
+        ShotDist    = 8,
+        LoopDelay   = 1,
+        AutoMurder  = false,
+        AutoSheriff = false,
+    },
+    Spin    = { Enabled = false, Power = 12000, Rot = 20000, Move = 22, Hold = true },
     UI      = { Scale = 1, Auto = 1 },
 }
 
-local Conns   = {}        -- все соединения для выгрузки
-local Loops   = {}        -- активные потоки
+local Conns   = {}
+local Loops   = {}
 local Unloaded = false
 
 local function Bind(signal, fn)
@@ -99,7 +80,6 @@ local function Bind(signal, fn)
     return c
 end
 
---============================ УТИЛИТЫ =================================
 local function New(class, props, children)
     local obj = Instance.new(class)
     local parent
@@ -147,7 +127,6 @@ local function Round(n, dec)
     return math.floor(n * m + 0.5) / m
 end
 
--- Куда пихать ScreenGui (совместимо с мобильными эксплойтами)
 local function GuiParent()
     local ok, res = pcall(function()
         if gethui then return gethui() end
@@ -166,7 +145,6 @@ local function GuiParent()
     return LP:WaitForChild("PlayerGui")
 end
 
--- Перетаскивание (мышь + палец)
 local function Dragify(frame, handle)
     handle = handle or frame
     local dragging, dragInput, startPos, startInput
@@ -197,7 +175,6 @@ local function Dragify(frame, handle)
     end)
 end
 
---=========================== ХЕЛПЕРЫ MM2 ==============================
 local function Char(plr)
     plr = plr or LP
     return plr.Character
@@ -226,7 +203,6 @@ local function HasTool(plr, name)
     return false
 end
 
--- Роль игрока: Murderer / Sheriff / Innocent
 local function GetRole(plr)
     if HasTool(plr, "Knife") then return "Murderer" end
     if HasTool(plr, "Gun")   then return "Sheriff"  end
@@ -243,7 +219,6 @@ local function MyRole()
     return GetRole(LP)
 end
 
--- Разрешена ли цель по правилам аима
 local function IsValidTarget(plr)
     if plr == LP or not Alive(plr) then return false end
     local mode = S.Aim.Mode
@@ -254,14 +229,14 @@ local function IsValidTarget(plr)
         return role == "Sheriff"
     elseif mode == "Любой игрок" then
         return true
-    else -- Авто (по роли)
+    else
         local my = MyRole()
         if my == "Sheriff" then
-            return role == "Murderer"          -- шериф бьёт только мардера
+            return role == "Murderer"
         elseif my == "Murderer" then
-            return role ~= "Murderer"          -- убийца бьёт шерифа и невинных
+            return role ~= "Murderer"
         else
-            return role == "Murderer"          -- невинный - целится в мардера
+            return role == "Murderer"
         end
     end
 end
@@ -283,9 +258,6 @@ local function Visible(part)
     return hit == nil
 end
 
---======================================================================
---                          КОРНЕВОЙ GUI
---======================================================================
 local GUIROOT = New("ScreenGui", {
     Name             = "EloHub",
     ResetOnSpawn     = false,
@@ -295,7 +267,6 @@ local GUIROOT = New("ScreenGui", {
     Parent           = GuiParent(),
 })
 
--- Слой для ESP-трейсеров и круга аима (под меню)
 local Overlay = New("Frame", {
     Name                   = "Overlay",
     Size                   = UDim2.fromScale(1, 1),
@@ -306,9 +277,6 @@ local Overlay = New("Frame", {
 
 local ESPFolder = New("Folder", { Name = "EloHub_ESP", Parent = GUIROOT })
 
---======================================================================
---                              ESP
---======================================================================
 local ESP = { objects = {} }
 
 function ESP.Remove(plr)
@@ -416,13 +384,12 @@ function ESP.Update()
                     o.bb.Enabled = false
                     o.tracer.Visible = false
                 else
-                    -- Chams / обводка
+
                     o.hl.Adornee      = char
                     o.hl.Enabled      = S.ESP.Chams
                     o.hl.FillColor    = col
                     o.hl.OutlineColor = col
 
-                    -- Подпись
                     o.bb.Adornee   = head or hrp
                     o.bb.Enabled   = S.ESP.Names or S.ESP.Distance or S.ESP.Role
                     o.name.Text    = S.ESP.Names and plr.Name or ""
@@ -434,7 +401,6 @@ function ESP.Update()
                     o.info.Text       = table.concat(line, "  |  ")
                     o.info.TextColor3 = col
 
-                    -- Трейсер
                     if S.ESP.Tracers then
                         local pos, on = Camera:WorldToViewportPoint(hrp.Position)
                         if on then
@@ -460,9 +426,6 @@ function ESP.Update()
     end
 end
 
---======================================================================
---                        СКОРОСТЬ / ПРЫЖОК
---======================================================================
 local Speed = {}
 
 function Speed.Step(dt)
@@ -473,8 +436,7 @@ function Speed.Step(dt)
     if S.Speed.Mode == "WalkSpeed" then
         if hum.WalkSpeed ~= S.Speed.Value then hum.WalkSpeed = S.Speed.Value end
     else
-        -- CFrame-режим: плавный доп. сдвиг по направлению стика/клавиш.
-        -- Работает с мобильным джойстиком и почти не ломается античитом.
+
         if hum.WalkSpeed ~= 16 then hum.WalkSpeed = 16 end
         if S.Fly.Enabled then return end
         local dir = hum.MoveDirection
@@ -503,9 +465,6 @@ function Jump.Apply()
     end
 end
 
---======================================================================
---                      АВТО-СБОР МОНЕТ (Coin_Server)
---======================================================================
 local Coins = {}
 local firetouch = (typeof(firetouchinterest) == "function" and firetouchinterest)
     or (syn and syn.firetouchinterest)
@@ -564,9 +523,6 @@ function Coins.Loop()
     end
 end
 
---======================================================================
---                    WALLHACK (NOCLIP) + ПРОЗРАЧНОСТЬ СТЕН
---======================================================================
 local Noclip = {}
 function Noclip.Step()
     if not S.Noclip.Enabled then return end
@@ -630,14 +586,10 @@ function Walls.Disable()
     if Walls.hook then Walls.hook:Disconnect() Walls.hook = nil end
 end
 
---======================================================================
---                               AIM
---======================================================================
 local Aim = {}
-local panEnergy   = 0      -- накопленный "отвод камеры"
-local reacquireAt = 0      -- кулдаун перед новым захватом
+local panEnergy   = 0
+local reacquireAt = 0
 
--- Круг захвата
 local FOVCircle = New("Frame", {
     Name                   = "FOVCircle",
     AnchorPoint            = Vector2.new(0.5, 0.5),
@@ -681,7 +633,7 @@ function Aim.FindTarget()
 end
 
 function Aim.Step(dt)
-    -- затухание энергии отвода камеры
+
     panEnergy = panEnergy * math.clamp(1 - dt * 6, 0, 1)
 
     if S.Aim.ShowFOV and S.Aim.Enabled then
@@ -696,7 +648,6 @@ function Aim.Step(dt)
 
     if not S.Aim.Enabled then S.Aim.Target = nil return end
 
-    -- Проверка текущей цели
     local t = S.Aim.Target
     if t then
         local part = AimPart(t)
@@ -705,10 +656,10 @@ function Aim.Step(dt)
         if not part or not myHRP or not IsValidTarget(t) then
             drop = true
         else
-            local sd = ScreenDist(part)                                  -- считается ДО коррекции камеры
+            local sd = ScreenDist(part)
             local wd = (part.Position - myHRP.Position).Magnitude
             if sd > S.Aim.LoseFOV or wd > S.Aim.Dist then drop = true end
-            if panEnergy > S.Aim.Unlock then drop = true end             -- игрок увёл камеру
+            if panEnergy > S.Aim.Unlock then drop = true end
         end
         if drop then
             S.Aim.Target = nil
@@ -717,12 +668,10 @@ function Aim.Step(dt)
         end
     end
 
-    -- Поиск новой цели
     if not S.Aim.Target and os.clock() >= reacquireAt then
         S.Aim.Target = Aim.FindTarget()
     end
 
-    -- Наведение
     local target = S.Aim.Target
     if target then
         local part = AimPart(target)
@@ -734,9 +683,6 @@ function Aim.Step(dt)
     end
 end
 
---======================================================================
---                          ФЕЙК РАГДОЛЛ
---======================================================================
 local Ragdoll = { clone = nil, saved = {} }
 
 function Ragdoll.On()
@@ -749,7 +695,6 @@ function Ragdoll.On()
     local clone = char:Clone()
     clone.Name = LP.Name .. "_Body"
 
-    -- убираем скрипты и лишнее
     for _, v in ipairs(clone:GetDescendants()) do
         if v:IsA("LocalScript") or v:IsA("Script") then v:Destroy() end
     end
@@ -761,7 +706,6 @@ function Ragdoll.On()
         ch:ChangeState(Enum.HumanoidStateType.Physics)
     end
 
-    -- превращаем суставы в шарниры -> тело обмякает
     for _, v in ipairs(clone:GetDescendants()) do
         if v:IsA("Motor6D") and v.Part0 and v.Part1 then
             local a0 = Instance.new("Attachment")
@@ -790,14 +734,13 @@ function Ragdoll.On()
     clone.Parent = Workspace
     Ragdoll.clone = clone
 
-    -- прячем настоящего персонажа (локально)
     Ragdoll.saved = {}
     for _, v in ipairs(char:GetDescendants()) do
         if v:IsA("BasePart") or v:IsA("Decal") or v:IsA("Texture") then
             Ragdoll.saved[v] = v.Transparency
             v.Transparency = 1
         elseif v:IsA("BillboardGui") or v:IsA("Accessory") then
-            -- ничего
+
         end
     end
     local nameTag = char:FindFirstChildOfClass("Humanoid")
@@ -816,9 +759,6 @@ function Ragdoll.Off()
     S.Ragdoll.Active = false
 end
 
---======================================================================
---                              ПОЛЁТ
---======================================================================
 local Fly = { bv = nil, up = false, down = false }
 
 function Fly.On()
@@ -859,11 +799,6 @@ function Fly.Step()
     Fly.bv.Velocity = v
 end
 
---======================================================================
---                      ГЛАВНЫЕ ЦИКЛЫ / РЕСПАВН
---======================================================================
--- Важно: аим вешаем ПОСЛЕ обновления стандартной камеры,
--- иначе модуль камеры перезапишет наш CFrame в том же кадре.
 RunService:BindToRenderStep("EloHub_Aim", Enum.RenderPriority.Camera.Value + 1, function(dt)
     pcall(Aim.Step, dt)
 end)
@@ -896,9 +831,6 @@ end)
 
 Bind(Players.PlayerRemoving, function(plr) ESP.Remove(plr) end)
 
---======================================================================
---                            ТЕМА / ФОН
---======================================================================
 local Theme = {
     Text   = Color3.fromRGB(32, 38, 52),
     Sub    = Color3.fromRGB(112, 124, 145),
@@ -908,7 +840,6 @@ local Theme = {
     Dark   = Color3.fromRGB(60, 70, 92),
 }
 
--- Процедурный фон "белый шёлк" (если не задан ID картинки)
 local function BuildSilk(parent)
     local base = New("Frame", {
         Name                   = "Silk",
@@ -928,7 +859,6 @@ local function BuildSilk(parent)
         Parent = base,
     })
 
-    -- волны
     local waves = {}
     for i = 1, 7 do
         local w = New("Frame", {
@@ -962,7 +892,6 @@ local function BuildSilk(parent)
         table.insert(waves, w)
     end
 
-    -- лёгкое "дыхание" волн
     task.spawn(function()
         while not Unloaded and base.Parent do
             for i, w in ipairs(waves) do
@@ -975,7 +904,6 @@ local function BuildSilk(parent)
         end
     end)
 
-    -- осветляющая вуаль, чтобы текст читался
     local veil = New("Frame", {
         Name                   = "Veil",
         Size                   = UDim2.fromScale(1, 1),
@@ -1022,9 +950,6 @@ local function BuildBackground(parent)
     return holder, img, silk
 end
 
---======================================================================
---                         КАРКАС ОКНА
---======================================================================
 local BASE_W, BASE_H = 648, 438
 
 local Main = New("Frame", {
@@ -1045,7 +970,6 @@ local UIS_Scale  = New("UIScale", { Scale = 1, Parent = Main })
 
 local BGHolder, BGImage, BGSilk = BuildBackground(Main)
 
--- Тонкая внутренняя окантовка (стеклянный край)
 local InnerGlow = New("Frame", {
     Size                   = UDim2.new(1, -8, 1, -8),
     Position               = UDim2.fromOffset(4, 4),
@@ -1056,7 +980,6 @@ local InnerGlow = New("Frame", {
 Corner(InnerGlow, 16)
 Stroke(InnerGlow, 1, Theme.White, 0.55)
 
---------------------------------- ШАПКА --------------------------------
 local TopBar = New("Frame", {
     Name                   = "TopBar",
     Size                   = UDim2.new(1, 0, 0, 56),
@@ -1124,7 +1047,6 @@ end
 local CloseBtn = TopButton("✕", 16, Color3.fromRGB(200, 70, 70))
 local MinBtn   = TopButton("—", 54)
 
---------------------------------- САЙДБАР ------------------------------
 local Sidebar = New("Frame", {
     Name                   = "Sidebar",
     Position               = UDim2.fromOffset(14, 62),
@@ -1168,7 +1090,6 @@ local UserTag = New("TextLabel", {
 Corner(UserTag, 9)
 Stroke(UserTag, 1, Theme.White, 0.25)
 
---------------------------------- КОНТЕНТ ------------------------------
 local Content = New("Frame", {
     Name                   = "Content",
     Position               = UDim2.fromOffset(170, 62),
@@ -1178,9 +1099,6 @@ local Content = New("Frame", {
     Parent                 = Main,
 })
 
---======================================================================
---                        БИБЛИОТЕКА ЭЛЕМЕНТОВ
---======================================================================
 local Tabs, CurrentTab = {}, nil
 
 local function SelectTab(tab)
@@ -1267,9 +1185,6 @@ local function AddTab(name, icon)
     btn.MouseButton1Click:Connect(function() SelectTab(tab) end)
     if #Tabs == 1 then SelectTab(tab) end
 
-    ------------------------------------------------------------------
-    -- Элементы
-    ------------------------------------------------------------------
     local API = {}
 
     local function Card(h)
@@ -1301,7 +1216,6 @@ local function AddTab(name, icon)
         return l
     end
 
-    -- Подсказка: высота подстраивается под текст (многострочно)
     function API:Label(text)
         local f = New("Frame", {
             Size                   = UDim2.new(1, 0, 0, 0),
@@ -1462,7 +1376,6 @@ local function AddTab(name, icon)
         Corner(knob, 8)
         Stroke(knob, 1.4, Theme.Accent, 0.15)
 
-        -- увеличенная зона нажатия для пальца
         local hit = New("TextButton", {
             Position               = UDim2.fromOffset(0, 24),
             Size                   = UDim2.new(1, 0, 0, 30),
@@ -1603,10 +1516,10 @@ local function AddTab(name, icon)
                 b.BackgroundTransparency = on and 0.15 or 0.72
                 b.TextColor3 = on and Theme.Text or Theme.Sub
             end
-            cur.Text = tostring(selected)
+            cur.Text = tostring(selected or "-")
         end
 
-        for _, opt in ipairs(options) do
+        local function addOption(opt)
             local b = New("TextButton", {
                 Size                   = UDim2.new(1, 0, 0, optH - 2),
                 BackgroundColor3       = Theme.White,
@@ -1627,6 +1540,8 @@ local function AddTab(name, icon)
                 pcall(callback, opt)
             end)
         end
+
+        for _, opt in ipairs(options) do addOption(opt) end
         paint()
 
         head.MouseButton1Click:Connect(function()
@@ -1638,6 +1553,21 @@ local function AddTab(name, icon)
         local obj = {}
         function obj:Set(v) selected = v paint() pcall(callback, v) end
         function obj:Get() return selected end
+        function obj:Refresh(newOptions)
+            options = newOptions or {}
+            for _, c in ipairs(list:GetChildren()) do
+                if c:IsA("TextButton") then c:Destroy() end
+            end
+            optBtns = {}
+            for _, opt in ipairs(options) do addOption(opt) end
+            if not table.find(options, selected) then selected = options[1] end
+            list.Size = UDim2.new(1, 0, 0, #options * optH + 6)
+            if open then
+                holder.Size = UDim2.new(1, 0, 0, 42 + #options * optH + 6)
+            end
+            paint()
+            return selected
+        end
         return obj
     end
 
@@ -1704,9 +1634,6 @@ local function AddTab(name, icon)
     return API
 end
 
---======================================================================
---                          УВЕДОМЛЕНИЯ
---======================================================================
 local ToastHolder = New("Frame", {
     AnchorPoint            = Vector2.new(0.5, 0),
     Position               = UDim2.new(0.5, 0, 0, 14),
@@ -1767,16 +1694,300 @@ local function Notify(text, color)
     end)
 end
 
---======================================================================
---            ОТСЛЕЖИВАНИЕ ОТВОДА КАМЕРЫ (срыв цели аима)
---======================================================================
+local RED = Color3.fromRGB(220, 90, 90)
+
+local Teleport = { saved = nil }
+
+function Teleport.Save()
+    local hrp = HRP(LP)
+    if not hrp then return end
+    Teleport.saved = hrp.CFrame
+    Notify("Позиция сохранена")
+end
+
+function Teleport.Back()
+    local hrp = HRP(LP)
+    if not hrp or not Teleport.saved then Notify("Точка не задана", RED) return end
+    hrp.CFrame = Teleport.saved
+    Notify("Возврат на точку")
+end
+
+function Teleport.To(plr, silent)
+    if not plr or plr == LP then
+        if not silent then Notify("Игрок не выбран", RED) end
+        return false
+    end
+    local me, them = HRP(LP), HRP(plr)
+    if not me or not them then
+        if not silent then Notify("Игрок недоступен", RED) end
+        return false
+    end
+    me.CFrame = them.CFrame * CFrame.new(0, 0, S.TP.Offset)
+    if not silent then Notify("ТП к " .. plr.Name, RoleColor(GetRole(plr))) end
+    return true
+end
+
+function Teleport.ByName(name)
+    if not name then Notify("Игрок не выбран", RED) return end
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LP and p.Name == name then return Teleport.To(p) end
+    end
+    local low = string.lower(name)
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LP and (string.find(string.lower(p.Name), low, 1, true)
+            or string.find(string.lower(p.DisplayName), low, 1, true)) then
+            return Teleport.To(p)
+        end
+    end
+    Notify("Игрок не найден", RED)
+end
+
+function Teleport.ToRole(role)
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LP and Alive(p) and GetRole(p) == role then return Teleport.To(p) end
+    end
+    Notify(RoleRU[role] .. " не найден", RED)
+end
+
+function Teleport.Nearest()
+    local me = HRP(LP)
+    if not me then return end
+    local best, bd = nil, math.huge
+    for _, p in ipairs(Players:GetPlayers()) do
+        local h = HRP(p)
+        if p ~= LP and Alive(p) and h then
+            local d = (h.Position - me.Position).Magnitude
+            if d < bd then best, bd = p, d end
+        end
+    end
+    if best then Teleport.To(best) else Notify("Рядом никого нет", RED) end
+end
+
+function Teleport.NearestCoin()
+    local me = HRP(LP)
+    local cont = Coins.Container()
+    if not me or not cont then Notify("Монеты не найдены", RED) return end
+    local best, bd = nil, math.huge
+    for _, c in ipairs(cont:GetChildren()) do
+        local part = Coins.PartOf(c)
+        if part then
+            local d = (part.Position - me.Position).Magnitude
+            if d < bd then best, bd = part, d end
+        end
+    end
+    if not best then Notify("Монеты не найдены", RED) return end
+    me.CFrame = CFrame.new(best.Position + Vector3.new(0, 2, 0))
+    Notify("ТП к монете (" .. math.floor(bd) .. "m)")
+end
+
+local Combat = { busy = false }
+
+local function GetTool(name)
+    local c = Char(LP)
+    local t = c and c:FindFirstChild(name)
+    if t then return t end
+    local bp = LP:FindFirstChildOfClass("Backpack")
+    return bp and bp:FindFirstChild(name)
+end
+
+local function EquipTool(name)
+    local t = GetTool(name)
+    if not t then return nil end
+    local c, h = Char(LP), Hum(LP)
+    if c and h and t.Parent ~= c then
+        pcall(function() h:EquipTool(t) end)
+    end
+    return t
+end
+
+local function HitParts(char)
+    local out = {}
+    for _, n in ipairs({ "HumanoidRootPart", "Torso", "UpperTorso", "LowerTorso", "Head" }) do
+        local p = char:FindFirstChild(n)
+        if p then table.insert(out, p) end
+    end
+    return out
+end
+
+local function SwingAt(tool, plr)
+    local char = Char(plr)
+    if not tool or not char then return end
+    pcall(function() tool:Activate() end)
+    local handle = tool:FindFirstChild("Handle") or tool:FindFirstChildWhichIsA("BasePart")
+    if handle and firetouch then
+        for _, p in ipairs(HitParts(char)) do
+            pcall(function()
+                firetouch(handle, p, 0)
+                firetouch(handle, p, 1)
+            end)
+        end
+    end
+end
+
+function Combat.FindRole(role)
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LP and Alive(p) and GetRole(p) == role then return p end
+    end
+end
+
+function Combat.Stop()
+    Combat.busy = false
+end
+
+function Combat.KillAll()
+    if Combat.busy then return end
+    if MyRole() ~= "Murderer" then
+        Notify("Ты не убийца — ножа нет", RED)
+        return
+    end
+    local knife = EquipTool("Knife")
+    if not knife then
+        Notify("Нож не найден", RED)
+        return
+    end
+    Combat.busy = true
+    task.spawn(function()
+        local me = HRP(LP)
+        local start = me and me.CFrame
+        local killed = 0
+        for _, plr in ipairs(Players:GetPlayers()) do
+            if not Combat.busy then break end
+            if plr ~= LP and Alive(plr) and GetRole(plr) ~= "Murderer" then
+                for _ = 1, S.Kill.Hits do
+                    if not Combat.busy then break end
+                    local a, b = HRP(LP), HRP(plr)
+                    if not a or not b then break end
+                    a.CFrame = b.CFrame * CFrame.new(0, 0, -1.5)
+                    SwingAt(knife, plr)
+                    task.wait(S.Kill.Delay)
+                    if not Alive(plr) then break end
+                end
+                if not Alive(plr) then killed = killed + 1 end
+            end
+        end
+        local back = HRP(LP)
+        if S.Kill.Return and start and back then back.CFrame = start end
+        Combat.busy = false
+        Notify("Кил-олл: убито " .. killed)
+    end)
+end
+
+function Combat.ShootMurderer(silent)
+    if MyRole() ~= "Sheriff" then
+        if not silent then Notify("Ты не шериф", RED) end
+        return
+    end
+    local m = Combat.FindRole("Murderer")
+    if not m then
+        if not silent then Notify("Убийца не найден", RED) end
+        return
+    end
+    local gun = EquipTool("Gun")
+    if not gun then
+        if not silent then Notify("Револьвера нет", RED) end
+        return
+    end
+    local part = AimPart(m)
+    local me = HRP(LP)
+    if not part or not me then return end
+
+    local start = me.CFrame
+    if S.Kill.TPShot then
+        me.CFrame = part.CFrame * CFrame.new(0, 0, S.Kill.ShotDist)
+        task.wait(0.08)
+    end
+    Camera.CFrame = CFrame.lookAt(Camera.CFrame.Position, part.Position)
+    task.wait(0.05)
+    pcall(function() gun:Activate() end)
+    for _, d in ipairs(gun:GetDescendants()) do
+        if d:IsA("RemoteEvent") then
+            pcall(function() d:FireServer(part.Position) end)
+        elseif d:IsA("RemoteFunction") then
+            pcall(function() d:InvokeServer(part.Position) end)
+        end
+    end
+    if S.Kill.TPShot and S.Kill.Return then
+        task.wait(0.2)
+        local back = HRP(LP)
+        if back then back.CFrame = start end
+    end
+    if not silent then Notify("Выстрел по " .. m.Name, S.ESP.Colors.Murderer) end
+end
+
+task.spawn(function()
+    while not Unloaded do
+        pcall(function()
+            if S.Kill.AutoMurder and MyRole() == "Murderer" then
+                Combat.KillAll()
+            end
+            if S.Kill.AutoSheriff and MyRole() == "Sheriff" then
+                Combat.ShootMurderer(true)
+            end
+        end)
+        task.wait(S.Kill.LoopDelay)
+    end
+end)
+
+local Spin = { bav = nil, angle = 0, flip = false, cf = nil }
+
+function Spin.On()
+    local hrp = HRP(LP)
+    if not hrp or Spin.bav then return end
+    local bav = Instance.new("BodyAngularVelocity")
+    bav.Name            = "EloSpin"
+    bav.MaxTorque       = Vector3.new(9e9, 9e9, 9e9)
+    bav.AngularVelocity = Vector3.new(0, S.Spin.Rot, 0)
+    bav.P               = 9e9
+    bav.Parent          = hrp
+    Spin.bav = bav
+    Spin.cf  = hrp.CFrame
+end
+
+function Spin.Off()
+    if Spin.bav then pcall(function() Spin.bav:Destroy() end) end
+    Spin.bav = nil
+    Spin.cf  = nil
+end
+
+function Spin.Step(dt)
+    if not S.Spin.Enabled then
+        if Spin.bav then Spin.Off() end
+        return
+    end
+    local hrp, hum = HRP(LP), Hum(LP)
+    if not hrp or not hum or hum.Health <= 0 then return end
+    if not Spin.bav or Spin.bav.Parent ~= hrp then
+        Spin.Off()
+        Spin.On()
+    end
+    if not Spin.bav then return end
+
+    Spin.bav.AngularVelocity = Vector3.new(0, S.Spin.Rot, 0)
+    Spin.flip = not Spin.flip
+    local p = S.Spin.Power
+    hrp.Velocity = Spin.flip and Vector3.new(p, p, p) or Vector3.new(-p, -p, -p)
+
+    if S.Spin.Hold then
+        if not Spin.cf then Spin.cf = hrp.CFrame end
+        Spin.angle = (Spin.angle + dt * 28) % (math.pi * 2)
+        local pos = Spin.cf.Position + hum.MoveDirection * S.Spin.Move * dt
+        Spin.cf = CFrame.new(pos)
+        hrp.CFrame = CFrame.new(pos) * CFrame.Angles(0, Spin.angle, 0)
+    else
+        Spin.cf = hrp.CFrame
+    end
+end
+
+Bind(RunService.Heartbeat, function(dt)
+    pcall(Spin.Step, dt)
+end)
+
 Bind(UserInputService.InputChanged, function(input, gameProcessed)
     if not S.Aim.Enabled then return end
     if input.UserInputType == Enum.UserInputType.MouseMovement then
         panEnergy = panEnergy + Vector2.new(input.Delta.X, input.Delta.Y).Magnitude
     elseif input.UserInputType == Enum.UserInputType.Touch and not gameProcessed then
-        -- считаем только свайпы в правой части экрана (зона поворота камеры),
-        -- чтобы джойстик движения не сбрасывал цель
+
         local vp = Camera.ViewportSize
         if input.Position.X > vp.X * 0.38 then
             panEnergy = panEnergy + Vector2.new(input.Delta.X, input.Delta.Y).Magnitude
@@ -1784,9 +1995,6 @@ Bind(UserInputService.InputChanged, function(input, gameProcessed)
     end
 end)
 
---======================================================================
---                  МОБИЛЬНЫЕ КНОПКИ ПОЛЁТА (вверх/вниз)
---======================================================================
 local FlyPad = New("Frame", {
     Name                   = "FlyPad",
     AnchorPoint            = Vector2.new(1, 1),
@@ -1834,9 +2042,6 @@ end
 PadButton("▲", 0,  function() Fly.up = true end,   function() Fly.up = false end)
 PadButton("▼", 70, function() Fly.down = true end, function() Fly.down = false end)
 
---======================================================================
---                    ПЛАВАЮЩАЯ КНОПКА ОТКРЫТИЯ
---======================================================================
 local OpenBtn = New("TextButton", {
     Name                   = "EloOpen",
     AnchorPoint            = Vector2.new(0, 0.5),
@@ -1864,9 +2069,6 @@ New("UIGradient", {
 })
 Dragify(OpenBtn)
 
---======================================================================
---                     ОТКРЫТИЕ / ЗАКРЫТИЕ МЕНЮ
---======================================================================
 local menuOpen, collapsed = false, false
 
 local function ApplyScale()
@@ -1923,7 +2125,6 @@ end)
 
 Dragify(Main, TopBar)
 
--- Горячая клавиша для ПК
 Bind(UserInputService.InputBegan, function(i, gp)
     if gp then return end
     if i.KeyCode == Enum.KeyCode.RightShift or i.KeyCode == Enum.KeyCode.Insert then
@@ -1931,19 +2132,17 @@ Bind(UserInputService.InputBegan, function(i, gp)
     end
 end)
 
---======================================================================
---                          СОДЕРЖИМОЕ МЕНЮ
---======================================================================
-local Panic = {}   -- тоглы, которые выключает кнопка "паника"
+local Panic = {}
 
 local Home     = AddTab("Главная",   "◆")
 local PlayerT  = AddTab("Игрок",     "◈")
+local TPTab    = AddTab("Телепорт",  "➤")
 local VisualT  = AddTab("Визуал",    "◉")
 local AimT     = AddTab("Аим",       "✛")
+local KillT    = AddTab("Убийство",  "☠")
 local MiscT    = AddTab("Прочее",    "✦")
 local SetsT    = AddTab("Настройки", "⚙")
 
------------------------------ ГЛАВНАЯ ----------------------------------
 Home:Section("Статус")
 local RoleLabel = Home:Label("Твоя роль: <b>...</b>")
 local CoinLabel = Home:Label("Монет собрано: <b>0</b>")
@@ -1964,7 +2163,6 @@ Home:Button("Выключить всё (паника)", function()
 end)
 Home:Label("ПК: <b>RightShift</b> или <b>Insert</b> — открыть/закрыть меню.\nТелефон: круглая кнопка <b>E</b> (её можно перетаскивать).")
 
------------------------------- ИГРОК -----------------------------------
 PlayerT:Section("Движение")
 table.insert(Panic, PlayerT:Toggle("Спид хак", false, function(v)
     S.Speed.Enabled = v
@@ -2014,7 +2212,49 @@ end))
 PlayerT:Slider("Скорость полёта", 20, 300, 60, 0, function(v) S.Fly.Speed = v end)
 PlayerT:Label("Направление — джойстик/WASD, высота — кнопки <b>▲ ▼</b> справа (на ПК ещё Space / Ctrl).")
 
------------------------------- ВИЗУАЛ ----------------------------------
+local function PlayerNames()
+    local t = {}
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LP then table.insert(t, p.Name) end
+    end
+    if #t == 0 then table.insert(t, "нет игроков") end
+    return t
+end
+
+TPTab:Section("Телепорт к игроку")
+local TPDrop
+TPDrop = TPTab:Dropdown("Цель", PlayerNames(), PlayerNames()[1], function(v)
+    S.TP.Name = v
+end)
+S.TP.Name = PlayerNames()[1]
+
+TPTab:Button("Обновить список игроков", function()
+    S.TP.Name = TPDrop:Refresh(PlayerNames())
+    Notify("Список обновлён")
+end)
+TPTab:Slider("Отступ от цели", 0, 15, 3, 1, function(v) S.TP.Offset = v end)
+TPTab:Button("ТП к выбранному", function() Teleport.ByName(S.TP.Name) end)
+
+TPTab:Section("Быстрый ТП")
+TPTab:Button("ТП к убийце", function() Teleport.ToRole("Murderer") end)
+TPTab:Button("ТП к шерифу", function() Teleport.ToRole("Sheriff") end)
+TPTab:Button("ТП к ближайшему игроку", function() Teleport.Nearest() end)
+TPTab:Button("ТП к ближайшей монете", function() Teleport.NearestCoin() end)
+
+TPTab:Section("Точка возврата")
+TPTab:Button("Сохранить позицию", function() Teleport.Save() end)
+TPTab:Button("Вернуться на позицию", function() Teleport.Back() end)
+TPTab:Label("Список обновляется сам при заходе и выходе игроков. Отступ — на сколько студов встать позади цели.")
+
+Bind(Players.PlayerAdded, function()
+    task.wait(1)
+    if TPDrop then S.TP.Name = TPDrop:Refresh(PlayerNames()) end
+end)
+Bind(Players.PlayerRemoving, function()
+    task.wait(0.5)
+    if TPDrop then S.TP.Name = TPDrop:Refresh(PlayerNames()) end
+end)
+
 VisualT:Section("ESP игроков")
 table.insert(Panic, VisualT:Toggle("Включить ESP", false, function(v)
     S.ESP.Enabled = v
@@ -2043,7 +2283,6 @@ VisualT:Button("Обновить стены (после новой карты)",
     if S.Walls.Enabled then Walls.Enable() Notify("Стены обновлены") end
 end)
 
-------------------------------- АИМ ------------------------------------
 AimT:Section("Захват цели")
 table.insert(Panic, AimT:Toggle("Включить AIM", false, function(v)
     S.Aim.Enabled = v
@@ -2069,7 +2308,46 @@ AimT:Section("Как работает")
 AimT:Label("Цель ловится, если она внутри круга захвата и ближе дальности. Пока цель держится — камера жёстко ведёт её.\nЕсли <b>отвести камеру</b> (свайп по правой половине экрана / мышь) сильнее чувствительности срыва — цель отпускается.")
 AimT:Label("Авто-режим: ты <font color=\"rgb(255,62,62)\">убийца</font> → цели шериф и невинные. Ты <font color=\"rgb(58,132,255)\">шериф</font> → только убийца. Ты невинный → убийца.")
 
------------------------------- ПРОЧЕЕ ----------------------------------
+KillT:Section("За убийцу (нож)")
+KillT:Button("Убить всех (кил-олл)", function() Combat.KillAll() end)
+table.insert(Panic, KillT:Toggle("Авто-убийство всех", false, function(v)
+    S.Kill.AutoMurder = v
+    if not v then Combat.Stop() end
+    Notify("Авто-килл (убийца): " .. (v and "ВКЛ" or "ВЫКЛ"), v and S.ESP.Colors.Murderer or nil)
+end))
+KillT:Slider("Задержка удара", 0.05, 1, 0.2, 2, function(v) S.Kill.Delay = v end)
+KillT:Slider("Ударов по цели", 1, 8, 2, 0, function(v) S.Kill.Hits = v end)
+
+KillT:Section("За шерифа (револьвер)")
+KillT:Button("Убить убийцу", function() Combat.ShootMurderer() end)
+table.insert(Panic, KillT:Toggle("Авто-убийство мардера", false, function(v)
+    S.Kill.AutoSheriff = v
+    Notify("Авто-килл (шериф): " .. (v and "ВКЛ" or "ВЫКЛ"), v and S.ESP.Colors.Sheriff or nil)
+end))
+KillT:Toggle("Телепорт к цели перед выстрелом", false, function(v) S.Kill.TPShot = v end)
+KillT:Slider("Дистанция выстрела", 3, 40, 8, 0, function(v) S.Kill.ShotDist = v end)
+
+KillT:Section("Общее")
+KillT:Toggle("Возвращаться на своё место", true, function(v) S.Kill.Return = v end)
+KillT:Slider("Пауза авто-режима", 0.2, 5, 1, 2, function(v) S.Kill.LoopDelay = v end)
+KillT:Button("СТОП (прервать кил-олл)", function()
+    Combat.Stop()
+    Notify("Остановлено", Color3.fromRGB(220, 90, 90))
+end)
+KillT:Label("Кил-олл работает только когда ты <b>убийца</b>: телепорт к каждому и удар ножом. Авто-режим за <b>шерифа</b> сам наводит револьвер на мардера и стреляет.")
+
+KillT:Section("Мега-крутилка")
+table.insert(Panic, KillT:Toggle("Мега-крутилка (отбрасывает игроков)", false, function(v)
+    S.Spin.Enabled = v
+    if v then Spin.On() else Spin.Off() end
+    Notify("Крутилка: " .. (v and "ВКЛ" or "ВЫКЛ"))
+end))
+KillT:Slider("Сила отброса", 1000, 60000, 12000, 0, function(v) S.Spin.Power = v end)
+KillT:Slider("Скорость вращения", 2000, 80000, 20000, 0, function(v) S.Spin.Rot = v end)
+KillT:Slider("Скорость ходьбы в крутилке", 5, 80, 22, 0, function(v) S.Spin.Move = v end)
+KillT:Toggle("Держать позицию (не улетать самому)", true, function(v) S.Spin.Hold = v end)
+KillT:Label("Персонаж бешено крутится: любого, кто подойдёт вплотную, выбрасывает за карту. Держи опцию «не улетать самому» включённой, иначе улетишь вместе с ним.")
+
 MiscT:Section("Монеты (" .. CONFIG.CoinName .. " в " .. CONFIG.CoinFolder .. ")")
 table.insert(Panic, MiscT:Toggle("Авто-сбор монет", false, function(v)
     S.Coins.Enabled = v
@@ -2094,7 +2372,6 @@ MiscT:Button("Сбросить персонажа", function()
     if h then h.Health = 0 end
 end)
 
----------------------------- НАСТРОЙКИ ---------------------------------
 SetsT:Section("Интерфейс")
 SetsT:Slider("Размер UI", 0.6, 1.6, 1, 2, function(v)
     S.UI.Scale = v
@@ -2131,9 +2408,6 @@ SetsT:Button("Выгрузить EloHub", function()
 end)
 SetsT:Label("<b>EloHub</b> • Murder Mystery 2 • Mobile Edition\nВсе функции клиентские. Используй на своём плейсе / приватном сервере.")
 
---======================================================================
---                       ЖИВЫЕ ЛЕЙБЛЫ (статус)
---======================================================================
 task.spawn(function()
     while not Unloaded do
         pcall(function()
@@ -2151,9 +2425,6 @@ task.spawn(function()
     end
 end)
 
---======================================================================
---                        ИНТРО-АНИМАЦИЯ EloHub
---======================================================================
 local function PlayIntro(done)
     local scrim = New("Frame", {
         Size                   = UDim2.fromScale(1, 1),
@@ -2258,14 +2529,16 @@ local function PlayIntro(done)
     end)
 end
 
---======================================================================
---                            ВЫГРУЗКА
---======================================================================
 _G.EloHub_Unload = function()
     if Unloaded then return end
     Unloaded = true
     pcall(function() S.Aim.Enabled = false end)
     pcall(function() RunService:UnbindFromRenderStep("EloHub_Aim") end)
+    S.Kill.AutoMurder  = false
+    S.Kill.AutoSheriff = false
+    S.Spin.Enabled     = false
+    pcall(Combat.Stop)
+    pcall(Spin.Off)
     pcall(Ragdoll.Off)
     pcall(Fly.Off)
     pcall(Walls.Disable)
@@ -2278,9 +2551,6 @@ _G.EloHub_Unload = function()
     _G.EloHub_Unload = nil
 end
 
---======================================================================
---                             СТАРТ
---======================================================================
 PlayIntro(function()
     SetMenu(true)
     Notify("EloHub загружен", Theme.Accent)
