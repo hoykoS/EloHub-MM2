@@ -1,0 +1,2295 @@
+--[[
+========================================================================
+    ______ _        _   _       _
+   |  ____| |      | | | |     | |
+   | |__  | | ___  | |_| |_   _| |__
+   |  __| | |/ _ \ |  _  | | | | '_ \
+   | |____| | (_) || | | | |_| | |_) |
+   |______|_|\___/ |_| |_|\__,_|_.__/
+
+   EloHub  |  Murder Mystery 2  |  Mobile Edition
+   Один файл, без внешних зависимостей.
+
+   Запуск:
+      loadstring(game:HttpGet("ССЫЛКА_НА_RAW_ФАЙЛ"))()
+
+   Полностью адаптировано под телефон:
+      * все элементы кликабельные пальцем (высота строк >= 34px)
+      * перетаскивание меню и кнопки открытия через Touch
+      * авто-масштаб под размер экрана + ручной ползунок размера UI
+      * никаких Drawing / mousemoverel — только GUI и Camera.CFrame
+========================================================================
+]]
+
+--========================= ЗАЩИТА ОТ ДУБЛЯ ============================
+if _G.EloHub_Unload then
+    pcall(_G.EloHub_Unload)
+    task.wait(0.15)
+end
+
+--============================ СЕРВИСЫ =================================
+local Players           = game:GetService("Players")
+local RunService        = game:GetService("RunService")
+local UserInputService   = game:GetService("UserInputService")
+local TweenService      = game:GetService("TweenService")
+local Workspace         = game:GetService("Workspace")
+local StarterGui        = game:GetService("StarterGui")
+local HttpService       = game:GetService("HttpService")
+
+local LP     = Players.LocalPlayer
+local Camera = Workspace.CurrentCamera
+
+--============================ КОНФИГ ==================================
+-- Сюда можно вставить ID своей картинки-фона (то самое фото с белыми волнами).
+-- Загрузи фото в Roblox (Create -> Decals), возьми ID и впиши ниже,
+-- либо вставь его прямо в меню: Настройки -> ID фона.
+-- Если оставить пустым — рисуется процедурный фон "белый шёлк".
+local CONFIG = {
+    BackgroundId = "",           -- напр. "rbxassetid://1234567890"
+    CoinFolder   = "CoinContainer",
+    CoinName     = "Coin_Server",
+}
+
+--============================ СОСТОЯНИЕ ===============================
+local S = {
+    ESP = {
+        Enabled  = false,
+        Chams    = true,
+        Names    = true,
+        Distance = true,
+        Role     = true,
+        Tracers  = false,
+        MaxDist  = 1200,
+        Colors   = {
+            Murderer = Color3.fromRGB(255, 62, 62),
+            Sheriff  = Color3.fromRGB(58, 132, 255),
+            Innocent = Color3.fromRGB(52, 224, 122),
+        },
+    },
+    Speed   = { Enabled = false, Value = 32, Mode = "CFrame" },
+    Jump    = { Enabled = false, Value = 50 },
+    Coins   = { Enabled = false, Radius = 400, Delay = 0.12, Teleport = false, Collected = 0 },
+    Noclip  = { Enabled = false },
+    Walls   = { Enabled = false, Value = 0.65 },
+    Aim     = {
+        Enabled   = false,
+        Mode      = "Авто (по роли)",
+        Part      = "Head",
+        Smooth    = 0.35,   -- 1 = жёсткий лок
+        Dist      = 400,    -- дальность захвата (studs)
+        FOV       = 150,    -- площадь захвата (радиус в пикселях)
+        LoseFOV   = 300,    -- радиус срыва цели
+        Unlock    = 90,     -- чувствительность срыва при отводе камеры
+        ShowFOV   = true,
+        VisCheck  = false,  -- только видимые цели
+        Target    = nil,
+    },
+    Fly     = { Enabled = false, Speed = 60 },
+    Ragdoll = { Active = false },
+    UI      = { Scale = 1, Auto = 1 },
+}
+
+local Conns   = {}        -- все соединения для выгрузки
+local Loops   = {}        -- активные потоки
+local Unloaded = false
+
+local function Bind(signal, fn)
+    local c = signal:Connect(fn)
+    table.insert(Conns, c)
+    return c
+end
+
+--============================ УТИЛИТЫ =================================
+local function New(class, props, children)
+    local obj = Instance.new(class)
+    local parent
+    for k, v in pairs(props or {}) do
+        if k == "Parent" then parent = v else obj[k] = v end
+    end
+    for _, ch in ipairs(children or {}) do ch.Parent = obj end
+    if parent then obj.Parent = parent end
+    return obj
+end
+
+local function Tween(obj, t, props, style, dir)
+    local info = TweenInfo.new(t or 0.22, style or Enum.EasingStyle.Quart, dir or Enum.EasingDirection.Out)
+    local tw = TweenService:Create(obj, info, props)
+    tw:Play()
+    return tw
+end
+
+local function Corner(parent, r)
+    return New("UICorner", { CornerRadius = UDim.new(0, r or 10), Parent = parent })
+end
+
+local function Stroke(parent, thickness, color, transparency)
+    return New("UIStroke", {
+        Thickness    = thickness or 1.2,
+        Color        = color or Color3.fromRGB(255, 255, 255),
+        Transparency = transparency or 0.15,
+        ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+        Parent       = parent,
+    })
+end
+
+local function Pad(parent, l, r, t, b)
+    return New("UIPadding", {
+        PaddingLeft   = UDim.new(0, l or 0),
+        PaddingRight  = UDim.new(0, r or 0),
+        PaddingTop    = UDim.new(0, t or 0),
+        PaddingBottom = UDim.new(0, b or 0),
+        Parent        = parent,
+    })
+end
+
+local function Round(n, dec)
+    local m = 10 ^ (dec or 0)
+    return math.floor(n * m + 0.5) / m
+end
+
+-- Куда пихать ScreenGui (совместимо с мобильными эксплойтами)
+local function GuiParent()
+    local ok, res = pcall(function()
+        if gethui then return gethui() end
+        if syn and syn.protect_gui then
+            local sg = Instance.new("ScreenGui")
+            syn.protect_gui(sg)
+            sg.Parent = game:GetService("CoreGui")
+            sg:Destroy()
+            return game:GetService("CoreGui")
+        end
+        if game:GetService("CoreGui"):FindFirstChild("RobloxGui") then
+            return game:GetService("CoreGui")
+        end
+    end)
+    if ok and res then return res end
+    return LP:WaitForChild("PlayerGui")
+end
+
+-- Перетаскивание (мышь + палец)
+local function Dragify(frame, handle)
+    handle = handle or frame
+    local dragging, dragInput, startPos, startInput
+    handle.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+            dragging   = true
+            startInput = input.Position
+            startPos   = frame.Position
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then dragging = false end
+            end)
+        end
+    end)
+    handle.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement
+        or input.UserInputType == Enum.UserInputType.Touch then
+            dragInput = input
+        end
+    end)
+    Bind(UserInputService.InputChanged, function(input)
+        if dragging and input == dragInput then
+            local d = input.Position - startInput
+            frame.Position = UDim2.new(
+                startPos.X.Scale, startPos.X.Offset + d.X,
+                startPos.Y.Scale, startPos.Y.Offset + d.Y)
+        end
+    end)
+end
+
+--=========================== ХЕЛПЕРЫ MM2 ==============================
+local function Char(plr)
+    plr = plr or LP
+    return plr.Character
+end
+
+local function HRP(plr)
+    local c = Char(plr)
+    return c and c:FindFirstChild("HumanoidRootPart")
+end
+
+local function Hum(plr)
+    local c = Char(plr)
+    return c and c:FindFirstChildOfClass("Humanoid")
+end
+
+local function Alive(plr)
+    local h = Hum(plr)
+    return h and h.Health > 0 and HRP(plr) ~= nil
+end
+
+local function HasTool(plr, name)
+    local bp = plr:FindFirstChildOfClass("Backpack")
+    if bp and bp:FindFirstChild(name) then return true end
+    local c = plr.Character
+    if c and c:FindFirstChild(name) then return true end
+    return false
+end
+
+-- Роль игрока: Murderer / Sheriff / Innocent
+local function GetRole(plr)
+    if HasTool(plr, "Knife") then return "Murderer" end
+    if HasTool(plr, "Gun")   then return "Sheriff"  end
+    return "Innocent"
+end
+
+local RoleRU = { Murderer = "УБИЙЦА", Sheriff = "ШЕРИФ", Innocent = "НЕВИННЫЙ" }
+
+local function RoleColor(role)
+    return S.ESP.Colors[role] or S.ESP.Colors.Innocent
+end
+
+local function MyRole()
+    return GetRole(LP)
+end
+
+-- Разрешена ли цель по правилам аима
+local function IsValidTarget(plr)
+    if plr == LP or not Alive(plr) then return false end
+    local mode = S.Aim.Mode
+    local role = GetRole(plr)
+    if mode == "Только убийца" then
+        return role == "Murderer"
+    elseif mode == "Только шериф" then
+        return role == "Sheriff"
+    elseif mode == "Любой игрок" then
+        return true
+    else -- Авто (по роли)
+        local my = MyRole()
+        if my == "Sheriff" then
+            return role == "Murderer"          -- шериф бьёт только мардера
+        elseif my == "Murderer" then
+            return role ~= "Murderer"          -- убийца бьёт шерифа и невинных
+        else
+            return role == "Murderer"          -- невинный - целится в мардера
+        end
+    end
+end
+
+local function AimPart(plr)
+    local c = Char(plr)
+    if not c then return nil end
+    return c:FindFirstChild(S.Aim.Part) or c:FindFirstChild("Head") or c:FindFirstChild("HumanoidRootPart")
+end
+
+local function Visible(part)
+    if not S.Aim.VisCheck then return true end
+    local origin = Camera.CFrame.Position
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    params.FilterDescendantsInstances = { Char(LP), part.Parent, Camera }
+    local dir = part.Position - origin
+    local hit = Workspace:Raycast(origin, dir, params)
+    return hit == nil
+end
+
+--======================================================================
+--                          КОРНЕВОЙ GUI
+--======================================================================
+local GUIROOT = New("ScreenGui", {
+    Name             = "EloHub",
+    ResetOnSpawn     = false,
+    IgnoreGuiInset   = true,
+    ZIndexBehavior   = Enum.ZIndexBehavior.Sibling,
+    DisplayOrder     = 9999,
+    Parent           = GuiParent(),
+})
+
+-- Слой для ESP-трейсеров и круга аима (под меню)
+local Overlay = New("Frame", {
+    Name                   = "Overlay",
+    Size                   = UDim2.fromScale(1, 1),
+    BackgroundTransparency = 1,
+    ZIndex                 = 1,
+    Parent                 = GUIROOT,
+})
+
+local ESPFolder = New("Folder", { Name = "EloHub_ESP", Parent = GUIROOT })
+
+--======================================================================
+--                              ESP
+--======================================================================
+local ESP = { objects = {} }
+
+function ESP.Remove(plr)
+    local o = ESP.objects[plr]
+    if not o then return end
+    for _, v in pairs(o) do
+        if typeof(v) == "Instance" then pcall(function() v:Destroy() end) end
+    end
+    ESP.objects[plr] = nil
+end
+
+function ESP.Create(plr)
+    if ESP.objects[plr] or plr == LP then return end
+
+    local hl = New("Highlight", {
+        Name                = "Elo_" .. plr.Name,
+        FillTransparency    = 0.6,
+        OutlineTransparency = 0,
+        DepthMode           = Enum.HighlightDepthMode.AlwaysOnTop,
+        Enabled             = false,
+        Parent              = ESPFolder,
+    })
+
+    local bb = New("BillboardGui", {
+        Name             = "Tag_" .. plr.Name,
+        Size             = UDim2.fromOffset(200, 42),
+        StudsOffset      = Vector3.new(0, 2.6, 0),
+        AlwaysOnTop      = true,
+        LightInfluence   = 0,
+        MaxDistance      = 5000,
+        Enabled          = false,
+        Parent           = ESPFolder,
+    })
+
+    local name = New("TextLabel", {
+        Size                   = UDim2.new(1, 0, 0, 20),
+        BackgroundTransparency = 1,
+        Font                   = Enum.Font.GothamBold,
+        TextSize               = 14,
+        TextStrokeTransparency = 0.45,
+        TextColor3             = Color3.new(1, 1, 1),
+        Text                   = plr.Name,
+        Parent                 = bb,
+    })
+
+    local info = New("TextLabel", {
+        Position               = UDim2.new(0, 0, 0, 19),
+        Size                   = UDim2.new(1, 0, 0, 18),
+        BackgroundTransparency = 1,
+        Font                   = Enum.Font.Gotham,
+        TextSize               = 12,
+        TextStrokeTransparency = 0.55,
+        TextColor3             = Color3.new(1, 1, 1),
+        Text                   = "",
+        Parent                 = bb,
+    })
+
+    local tracer = New("Frame", {
+        Name                   = "Tracer_" .. plr.Name,
+        AnchorPoint            = Vector2.new(0.5, 0.5),
+        Size                   = UDim2.fromOffset(0, 2),
+        BorderSizePixel        = 0,
+        BackgroundTransparency = 0.25,
+        Visible                = false,
+        ZIndex                 = 2,
+        Parent                 = Overlay,
+    })
+
+    ESP.objects[plr] = { hl = hl, bb = bb, name = name, info = info, tracer = tracer }
+end
+
+function ESP.SetAll(state)
+    for _, o in pairs(ESP.objects) do
+        o.hl.Enabled     = false
+        o.bb.Enabled     = false
+        o.tracer.Visible = false
+    end
+    if not state then return end
+end
+
+function ESP.Update()
+    local myHRP = HRP(LP)
+    for plr, o in pairs(ESP.objects) do
+        if not plr.Parent then ESP.Remove(plr) end
+    end
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LP then
+            if not ESP.objects[plr] then ESP.Create(plr) end
+            local o = ESP.objects[plr]
+            local char = Char(plr)
+            local hrp  = HRP(plr)
+            local head = char and char:FindFirstChild("Head")
+
+            if not S.ESP.Enabled or not char or not hrp or not Alive(plr) then
+                o.hl.Enabled = false
+                o.bb.Enabled = false
+                o.tracer.Visible = false
+            else
+                local role  = GetRole(plr)
+                local col   = RoleColor(role)
+                local dist  = myHRP and (myHRP.Position - hrp.Position).Magnitude or 0
+
+                if dist > S.ESP.MaxDist then
+                    o.hl.Enabled = false
+                    o.bb.Enabled = false
+                    o.tracer.Visible = false
+                else
+                    -- Chams / обводка
+                    o.hl.Adornee      = char
+                    o.hl.Enabled      = S.ESP.Chams
+                    o.hl.FillColor    = col
+                    o.hl.OutlineColor = col
+
+                    -- Подпись
+                    o.bb.Adornee   = head or hrp
+                    o.bb.Enabled   = S.ESP.Names or S.ESP.Distance or S.ESP.Role
+                    o.name.Text    = S.ESP.Names and plr.Name or ""
+                    o.name.TextColor3 = col
+
+                    local line = {}
+                    if S.ESP.Role     then table.insert(line, RoleRU[role]) end
+                    if S.ESP.Distance then table.insert(line, math.floor(dist) .. "m") end
+                    o.info.Text       = table.concat(line, "  |  ")
+                    o.info.TextColor3 = col
+
+                    -- Трейсер
+                    if S.ESP.Tracers then
+                        local pos, on = Camera:WorldToViewportPoint(hrp.Position)
+                        if on then
+                            local vp   = Camera.ViewportSize
+                            local from = Vector2.new(vp.X / 2, vp.Y)
+                            local to   = Vector2.new(pos.X, pos.Y)
+                            local d    = to - from
+                            local mid  = from + d / 2
+                            o.tracer.Visible         = true
+                            o.tracer.BackgroundColor3 = col
+                            o.tracer.Position        = UDim2.fromOffset(mid.X, mid.Y)
+                            o.tracer.Size            = UDim2.fromOffset(d.Magnitude, 2)
+                            o.tracer.Rotation        = math.deg(math.atan2(d.Y, d.X))
+                        else
+                            o.tracer.Visible = false
+                        end
+                    else
+                        o.tracer.Visible = false
+                    end
+                end
+            end
+        end
+    end
+end
+
+--======================================================================
+--                        СКОРОСТЬ / ПРЫЖОК
+--======================================================================
+local Speed = {}
+
+function Speed.Step(dt)
+    if not S.Speed.Enabled then return end
+    local hum, hrp = Hum(LP), HRP(LP)
+    if not hum or not hrp or hum.Health <= 0 then return end
+
+    if S.Speed.Mode == "WalkSpeed" then
+        if hum.WalkSpeed ~= S.Speed.Value then hum.WalkSpeed = S.Speed.Value end
+    else
+        -- CFrame-режим: плавный доп. сдвиг по направлению стика/клавиш.
+        -- Работает с мобильным джойстиком и почти не ломается античитом.
+        if hum.WalkSpeed ~= 16 then hum.WalkSpeed = 16 end
+        if S.Fly.Enabled then return end
+        local dir = hum.MoveDirection
+        if dir.Magnitude > 0 then
+            local extra = math.max(S.Speed.Value - 16, 0)
+            hrp.CFrame = hrp.CFrame + dir * extra * dt
+        end
+    end
+end
+
+function Speed.Reset()
+    local hum = Hum(LP)
+    if hum then hum.WalkSpeed = 16 end
+end
+
+local Jump = {}
+function Jump.Apply()
+    local hum = Hum(LP)
+    if not hum then return end
+    if S.Jump.Enabled then
+        hum.UseJumpPower = true
+        hum.JumpPower = S.Jump.Value
+    else
+        hum.UseJumpPower = true
+        hum.JumpPower = 50
+    end
+end
+
+--======================================================================
+--                      АВТО-СБОР МОНЕТ (Coin_Server)
+--======================================================================
+local Coins = {}
+local firetouch = (typeof(firetouchinterest) == "function" and firetouchinterest)
+    or (syn and syn.firetouchinterest)
+
+function Coins.Container()
+    return Workspace:FindFirstChild(CONFIG.CoinFolder)
+        or Workspace:FindFirstChild("CoinContainer", true)
+end
+
+function Coins.PartOf(coin)
+    if coin:IsA("BasePart") then return coin end
+    return coin:FindFirstChildWhichIsA("BasePart", true)
+end
+
+function Coins.Take(part, hrp)
+    if firetouch then
+        pcall(function()
+            firetouch(hrp, part, 0)
+            firetouch(hrp, part, 1)
+        end)
+        return true
+    elseif S.Coins.Teleport then
+        local old = hrp.CFrame
+        hrp.CFrame = CFrame.new(part.Position)
+        task.wait(0.06)
+        hrp.CFrame = old
+        return true
+    end
+    return false
+end
+
+function Coins.Loop()
+    while not Unloaded do
+        if S.Coins.Enabled then
+            local ok = pcall(function()
+                local hrp = HRP(LP)
+                local cont = Coins.Container()
+                if hrp and cont then
+                    for _, coin in ipairs(cont:GetChildren()) do
+                        if not S.Coins.Enabled then break end
+                        if coin.Name == CONFIG.CoinName or coin:IsA("BasePart") or coin:IsA("Model") then
+                            local part = Coins.PartOf(coin)
+                            if part and (part.Position - hrp.Position).Magnitude <= S.Coins.Radius then
+                                if Coins.Take(part, hrp) then
+                                    S.Coins.Collected = S.Coins.Collected + 1
+                                end
+                                task.wait(S.Coins.Delay)
+                            end
+                        end
+                    end
+                end
+            end)
+            if not ok then task.wait(0.5) end
+        end
+        task.wait(0.25)
+    end
+end
+
+--======================================================================
+--                    WALLHACK (NOCLIP) + ПРОЗРАЧНОСТЬ СТЕН
+--======================================================================
+local Noclip = {}
+function Noclip.Step()
+    if not S.Noclip.Enabled then return end
+    local char = Char(LP)
+    if not char then return end
+    for _, p in ipairs(char:GetDescendants()) do
+        if p:IsA("BasePart") and p.CanCollide then
+            p.CanCollide = false
+        end
+    end
+end
+
+local Walls = { saved = {}, hook = nil, cont = nil }
+
+local function IsCharacterPart(p)
+    local m = p:FindFirstAncestorOfClass("Model")
+    while m do
+        if m:FindFirstChildOfClass("Humanoid") then return true end
+        m = m:FindFirstAncestorOfClass("Model")
+    end
+    return false
+end
+
+function Walls.ApplyTo(p)
+    if not p:IsA("BasePart") then return end
+    if p.Transparency >= 1 then return end
+    if IsCharacterPart(p) then return end
+    if Walls.cont and p:IsDescendantOf(Walls.cont) then return end
+    if Walls.saved[p] == nil then Walls.saved[p] = p.Transparency end
+    p.Transparency = S.Walls.Value
+end
+
+function Walls.Enable()
+    Walls.cont = Coins.Container()
+    for _, p in ipairs(Workspace:GetDescendants()) do
+        pcall(Walls.ApplyTo, p)
+    end
+    if not Walls.hook then
+        Walls.hook = Workspace.DescendantAdded:Connect(function(p)
+            if S.Walls.Enabled then
+                task.wait(0.05)
+                pcall(Walls.ApplyTo, p)
+            end
+        end)
+        table.insert(Conns, Walls.hook)
+    end
+end
+
+function Walls.Refresh()
+    if not S.Walls.Enabled then return end
+    for p, _ in pairs(Walls.saved) do
+        if p and p.Parent then p.Transparency = S.Walls.Value end
+    end
+end
+
+function Walls.Disable()
+    for p, t in pairs(Walls.saved) do
+        if p and p.Parent then pcall(function() p.Transparency = t end) end
+    end
+    Walls.saved = {}
+    if Walls.hook then Walls.hook:Disconnect() Walls.hook = nil end
+end
+
+--======================================================================
+--                               AIM
+--======================================================================
+local Aim = {}
+local panEnergy   = 0      -- накопленный "отвод камеры"
+local reacquireAt = 0      -- кулдаун перед новым захватом
+
+-- Круг захвата
+local FOVCircle = New("Frame", {
+    Name                   = "FOVCircle",
+    AnchorPoint            = Vector2.new(0.5, 0.5),
+    BackgroundTransparency = 1,
+    Size                   = UDim2.fromOffset(300, 300),
+    Visible                = false,
+    ZIndex                 = 2,
+    Parent                 = Overlay,
+})
+New("UICorner", { CornerRadius = UDim.new(1, 0), Parent = FOVCircle })
+local FOVStroke = New("UIStroke", {
+    Thickness    = 1.6,
+    Color        = Color3.fromRGB(255, 255, 255),
+    Transparency = 0.25,
+    Parent       = FOVCircle,
+})
+
+local function ScreenDist(part)
+    local pos, on = Camera:WorldToViewportPoint(part.Position)
+    if not on then return math.huge, nil end
+    local vp = Camera.ViewportSize
+    return (Vector2.new(pos.X, pos.Y) - Vector2.new(vp.X / 2, vp.Y / 2)).Magnitude, pos
+end
+
+function Aim.FindTarget()
+    local myHRP = HRP(LP)
+    if not myHRP then return nil end
+    local best, bestDist = nil, S.Aim.FOV
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if IsValidTarget(plr) then
+            local part = AimPart(plr)
+            if part and (part.Position - myHRP.Position).Magnitude <= S.Aim.Dist then
+                local sd = ScreenDist(part)
+                if sd < bestDist and Visible(part) then
+                    best, bestDist = plr, sd
+                end
+            end
+        end
+    end
+    return best
+end
+
+function Aim.Step(dt)
+    -- затухание энергии отвода камеры
+    panEnergy = panEnergy * math.clamp(1 - dt * 6, 0, 1)
+
+    if S.Aim.ShowFOV and S.Aim.Enabled then
+        local vp = Camera.ViewportSize
+        FOVCircle.Visible  = true
+        FOVCircle.Position = UDim2.fromOffset(vp.X / 2, vp.Y / 2)
+        FOVCircle.Size     = UDim2.fromOffset(S.Aim.FOV * 2, S.Aim.FOV * 2)
+        FOVStroke.Color    = S.Aim.Target and RoleColor(GetRole(S.Aim.Target)) or Color3.fromRGB(255, 255, 255)
+    else
+        FOVCircle.Visible = false
+    end
+
+    if not S.Aim.Enabled then S.Aim.Target = nil return end
+
+    -- Проверка текущей цели
+    local t = S.Aim.Target
+    if t then
+        local part = AimPart(t)
+        local myHRP = HRP(LP)
+        local drop = false
+        if not part or not myHRP or not IsValidTarget(t) then
+            drop = true
+        else
+            local sd = ScreenDist(part)                                  -- считается ДО коррекции камеры
+            local wd = (part.Position - myHRP.Position).Magnitude
+            if sd > S.Aim.LoseFOV or wd > S.Aim.Dist then drop = true end
+            if panEnergy > S.Aim.Unlock then drop = true end             -- игрок увёл камеру
+        end
+        if drop then
+            S.Aim.Target = nil
+            reacquireAt  = os.clock() + 0.3
+            panEnergy    = 0
+        end
+    end
+
+    -- Поиск новой цели
+    if not S.Aim.Target and os.clock() >= reacquireAt then
+        S.Aim.Target = Aim.FindTarget()
+    end
+
+    -- Наведение
+    local target = S.Aim.Target
+    if target then
+        local part = AimPart(target)
+        if part then
+            local goal  = CFrame.lookAt(Camera.CFrame.Position, part.Position)
+            local alpha = math.clamp(S.Aim.Smooth, 0.02, 1)
+            Camera.CFrame = Camera.CFrame:Lerp(goal, alpha)
+        end
+    end
+end
+
+--======================================================================
+--                          ФЕЙК РАГДОЛЛ
+--======================================================================
+local Ragdoll = { clone = nil, saved = {} }
+
+function Ragdoll.On()
+    local char = Char(LP)
+    if not char or Ragdoll.clone then return end
+    local hrp = HRP(LP)
+    if not hrp then return end
+
+    char.Archivable = true
+    local clone = char:Clone()
+    clone.Name = LP.Name .. "_Body"
+
+    -- убираем скрипты и лишнее
+    for _, v in ipairs(clone:GetDescendants()) do
+        if v:IsA("LocalScript") or v:IsA("Script") then v:Destroy() end
+    end
+
+    local ch = clone:FindFirstChildOfClass("Humanoid")
+    if ch then
+        ch.PlatformStand = true
+        ch.BreakJointsOnDeath = false
+        ch:ChangeState(Enum.HumanoidStateType.Physics)
+    end
+
+    -- превращаем суставы в шарниры -> тело обмякает
+    for _, v in ipairs(clone:GetDescendants()) do
+        if v:IsA("Motor6D") and v.Part0 and v.Part1 then
+            local a0 = Instance.new("Attachment")
+            local a1 = Instance.new("Attachment")
+            a0.CFrame = v.C0
+            a1.CFrame = v.C1
+            a0.Parent = v.Part0
+            a1.Parent = v.Part1
+            local bs = Instance.new("BallSocketConstraint")
+            bs.Attachment0    = a0
+            bs.Attachment1    = a1
+            bs.LimitsEnabled  = true
+            bs.TwistLimitsEnabled = true
+            bs.UpperAngle     = 45
+            bs.Parent         = v.Part1
+            v:Destroy()
+        end
+    end
+    for _, v in ipairs(clone:GetDescendants()) do
+        if v:IsA("BasePart") then
+            v.Anchored   = false
+            v.CanCollide = (v.Name ~= "HumanoidRootPart")
+        end
+    end
+
+    clone.Parent = Workspace
+    Ragdoll.clone = clone
+
+    -- прячем настоящего персонажа (локально)
+    Ragdoll.saved = {}
+    for _, v in ipairs(char:GetDescendants()) do
+        if v:IsA("BasePart") or v:IsA("Decal") or v:IsA("Texture") then
+            Ragdoll.saved[v] = v.Transparency
+            v.Transparency = 1
+        elseif v:IsA("BillboardGui") or v:IsA("Accessory") then
+            -- ничего
+        end
+    end
+    local nameTag = char:FindFirstChildOfClass("Humanoid")
+    if nameTag then nameTag.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None end
+
+    S.Ragdoll.Active = true
+end
+
+function Ragdoll.Off()
+    if Ragdoll.clone then pcall(function() Ragdoll.clone:Destroy() end) end
+    Ragdoll.clone = nil
+    for v, t in pairs(Ragdoll.saved) do
+        if v and v.Parent then pcall(function() v.Transparency = t end) end
+    end
+    Ragdoll.saved = {}
+    S.Ragdoll.Active = false
+end
+
+--======================================================================
+--                              ПОЛЁТ
+--======================================================================
+local Fly = { bv = nil, up = false, down = false }
+
+function Fly.On()
+    local hrp = HRP(LP)
+    if not hrp or Fly.bv then return end
+    local bv = Instance.new("BodyVelocity")
+    bv.Name      = "EloFly"
+    bv.MaxForce  = Vector3.new(1e6, 1e6, 1e6)
+    bv.P         = 8000
+    bv.Velocity  = Vector3.zero
+    bv.Parent    = hrp
+    Fly.bv = bv
+end
+
+function Fly.Off()
+    if Fly.bv then pcall(function() Fly.bv:Destroy() end) end
+    Fly.bv = nil
+end
+
+function Fly.Step()
+    if not S.Fly.Enabled then
+        if Fly.bv then Fly.Off() end
+        return
+    end
+    local hrp, hum = HRP(LP), Hum(LP)
+    if not hrp or not hum then return end
+    if not Fly.bv or Fly.bv.Parent ~= hrp then Fly.Off() Fly.On() end
+    if not Fly.bv then return end
+
+    local dir = hum.MoveDirection
+    local v   = Vector3.new(dir.X, 0, dir.Z) * S.Fly.Speed
+
+    local vert = 0
+    if Fly.up   or UserInputService:IsKeyDown(Enum.KeyCode.Space)       then vert = vert + 1 end
+    if Fly.down or UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then vert = vert - 1 end
+    v = v + Vector3.new(0, vert * S.Fly.Speed, 0)
+
+    Fly.bv.Velocity = v
+end
+
+--======================================================================
+--                      ГЛАВНЫЕ ЦИКЛЫ / РЕСПАВН
+--======================================================================
+-- Важно: аим вешаем ПОСЛЕ обновления стандартной камеры,
+-- иначе модуль камеры перезапишет наш CFrame в том же кадре.
+RunService:BindToRenderStep("EloHub_Aim", Enum.RenderPriority.Camera.Value + 1, function(dt)
+    pcall(Aim.Step, dt)
+end)
+
+Bind(RunService.Stepped, function(_, dt)
+    pcall(Noclip.Step)
+    pcall(Speed.Step, dt)
+    pcall(Fly.Step)
+end)
+
+task.spawn(function()
+    while not Unloaded do
+        pcall(ESP.Update)
+        task.wait(0.15)
+    end
+end)
+
+task.spawn(Coins.Loop)
+
+Bind(LP.CharacterAdded, function(char)
+    task.wait(0.8)
+    Ragdoll.Off()
+    Fly.Off()
+    pcall(Jump.Apply)
+    if S.Speed.Enabled and S.Speed.Mode == "WalkSpeed" then
+        local h = Hum(LP)
+        if h then h.WalkSpeed = S.Speed.Value end
+    end
+end)
+
+Bind(Players.PlayerRemoving, function(plr) ESP.Remove(plr) end)
+
+--======================================================================
+--                            ТЕМА / ФОН
+--======================================================================
+local Theme = {
+    Text   = Color3.fromRGB(32, 38, 52),
+    Sub    = Color3.fromRGB(112, 124, 145),
+    White  = Color3.fromRGB(255, 255, 255),
+    Accent = Color3.fromRGB(96, 142, 225),
+    Soft   = Color3.fromRGB(228, 234, 243),
+    Dark   = Color3.fromRGB(60, 70, 92),
+}
+
+-- Процедурный фон "белый шёлк" (если не задан ID картинки)
+local function BuildSilk(parent)
+    local base = New("Frame", {
+        Name                   = "Silk",
+        Size                   = UDim2.fromScale(1, 1),
+        BackgroundColor3       = Color3.fromRGB(245, 248, 252),
+        BorderSizePixel        = 0,
+        ZIndex                 = 0,
+        Parent                 = parent,
+    })
+    New("UIGradient", {
+        Rotation = 115,
+        Color = ColorSequence.new({
+            ColorSequenceKeypoint.new(0.00, Color3.fromRGB(255, 255, 255)),
+            ColorSequenceKeypoint.new(0.45, Color3.fromRGB(238, 243, 250)),
+            ColorSequenceKeypoint.new(1.00, Color3.fromRGB(214, 224, 238)),
+        }),
+        Parent = base,
+    })
+
+    -- волны
+    local waves = {}
+    for i = 1, 7 do
+        local w = New("Frame", {
+            Name                   = "Wave" .. i,
+            AnchorPoint            = Vector2.new(0.5, 0.5),
+            Position               = UDim2.fromScale(0.5, 0.16 + (i - 1) * 0.13),
+            Size                   = UDim2.fromScale(1.75, 0.16),
+            Rotation               = -14 + i * 3.2,
+            BackgroundColor3       = Color3.fromRGB(255, 255, 255),
+            BackgroundTransparency = 0.18 + i * 0.045,
+            BorderSizePixel        = 0,
+            ZIndex                 = 0,
+            Parent                 = base,
+        })
+        New("UICorner", { CornerRadius = UDim.new(1, 0), Parent = w })
+        New("UIGradient", {
+            Rotation = 0,
+            Color = ColorSequence.new({
+                ColorSequenceKeypoint.new(0.00, Color3.fromRGB(255, 255, 255)),
+                ColorSequenceKeypoint.new(0.50, Color3.fromRGB(246, 249, 253)),
+                ColorSequenceKeypoint.new(1.00, Color3.fromRGB(206, 219, 236)),
+            }),
+            Transparency = NumberSequence.new({
+                NumberSequenceKeypoint.new(0.00, 1),
+                NumberSequenceKeypoint.new(0.30, 0.05),
+                NumberSequenceKeypoint.new(0.72, 0.12),
+                NumberSequenceKeypoint.new(1.00, 1),
+            }),
+            Parent = w,
+        })
+        table.insert(waves, w)
+    end
+
+    -- лёгкое "дыхание" волн
+    task.spawn(function()
+        while not Unloaded and base.Parent do
+            for i, w in ipairs(waves) do
+                Tween(w, 3.2 + i * 0.35, {
+                    Rotation = -14 + i * 3.2 + math.random(-25, 25) / 10,
+                    Position = UDim2.fromScale(0.5 + math.random(-25, 25) / 1000, 0.16 + (i - 1) * 0.13),
+                }, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
+            end
+            task.wait(3.4)
+        end
+    end)
+
+    -- осветляющая вуаль, чтобы текст читался
+    local veil = New("Frame", {
+        Name                   = "Veil",
+        Size                   = UDim2.fromScale(1, 1),
+        BackgroundColor3       = Color3.fromRGB(255, 255, 255),
+        BackgroundTransparency = 0.32,
+        BorderSizePixel        = 0,
+        ZIndex                 = 0,
+        Parent                 = base,
+    })
+    New("UIGradient", {
+        Rotation = 90,
+        Transparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0.0, 0.15),
+            NumberSequenceKeypoint.new(0.5, 0.45),
+            NumberSequenceKeypoint.new(1.0, 0.10),
+        }),
+        Parent = veil,
+    })
+    return base
+end
+
+local function BuildBackground(parent)
+    local holder = New("Frame", {
+        Name                   = "BG",
+        Size                   = UDim2.fromScale(1, 1),
+        BackgroundColor3       = Color3.fromRGB(248, 250, 253),
+        BorderSizePixel        = 0,
+        ZIndex                 = 0,
+        Parent                 = parent,
+    })
+    local img = New("ImageLabel", {
+        Name                   = "Photo",
+        Size                   = UDim2.fromScale(1, 1),
+        BackgroundTransparency = 1,
+        ScaleType              = Enum.ScaleType.Crop,
+        Image                  = CONFIG.BackgroundId,
+        ImageTransparency      = CONFIG.BackgroundId ~= "" and 0 or 1,
+        Visible                = CONFIG.BackgroundId ~= "",
+        ZIndex                 = 0,
+        Parent                 = holder,
+    })
+    local silk = BuildSilk(holder)
+    silk.Visible = (CONFIG.BackgroundId == "")
+    return holder, img, silk
+end
+
+--======================================================================
+--                         КАРКАС ОКНА
+--======================================================================
+local BASE_W, BASE_H = 648, 438
+
+local Main = New("Frame", {
+    Name             = "Main",
+    AnchorPoint      = Vector2.new(0.5, 0.5),
+    Position         = UDim2.fromScale(0.5, 0.5),
+    Size             = UDim2.fromOffset(BASE_W, BASE_H),
+    BackgroundColor3 = Color3.fromRGB(250, 252, 255),
+    BorderSizePixel  = 0,
+    ClipsDescendants = true,
+    Visible          = false,
+    ZIndex           = 10,
+    Parent           = GUIROOT,
+})
+Corner(Main, 20)
+local MainStroke = Stroke(Main, 2, Theme.White, 0.05)
+local UIS_Scale  = New("UIScale", { Scale = 1, Parent = Main })
+
+local BGHolder, BGImage, BGSilk = BuildBackground(Main)
+
+-- Тонкая внутренняя окантовка (стеклянный край)
+local InnerGlow = New("Frame", {
+    Size                   = UDim2.new(1, -8, 1, -8),
+    Position               = UDim2.fromOffset(4, 4),
+    BackgroundTransparency = 1,
+    ZIndex                 = 11,
+    Parent                 = Main,
+})
+Corner(InnerGlow, 16)
+Stroke(InnerGlow, 1, Theme.White, 0.55)
+
+--------------------------------- ШАПКА --------------------------------
+local TopBar = New("Frame", {
+    Name                   = "TopBar",
+    Size                   = UDim2.new(1, 0, 0, 56),
+    BackgroundTransparency = 1,
+    ZIndex                 = 12,
+    Parent                 = Main,
+})
+
+local Logo = New("TextLabel", {
+    Position               = UDim2.fromOffset(20, 10),
+    Size                   = UDim2.fromOffset(200, 26),
+    BackgroundTransparency = 1,
+    Font                   = Enum.Font.GothamBlack,
+    Text                   = "EloHub",
+    TextSize               = 24,
+    TextColor3             = Theme.Text,
+    TextXAlignment         = Enum.TextXAlignment.Left,
+    ZIndex                 = 12,
+    Parent                 = TopBar,
+})
+New("UIGradient", {
+    Rotation = 25,
+    Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, Color3.fromRGB(40, 48, 66)),
+        ColorSequenceKeypoint.new(1, Color3.fromRGB(120, 145, 185)),
+    }),
+    Parent = Logo,
+})
+
+local SubLogo = New("TextLabel", {
+    Position               = UDim2.fromOffset(21, 33),
+    Size                   = UDim2.fromOffset(280, 14),
+    BackgroundTransparency = 1,
+    Font                   = Enum.Font.Gotham,
+    Text                   = "Murder Mystery 2  •  Mobile Edition",
+    TextSize               = 11,
+    TextColor3             = Theme.Sub,
+    TextXAlignment         = Enum.TextXAlignment.Left,
+    ZIndex                 = 12,
+    Parent                 = TopBar,
+})
+
+local function TopButton(text, offsetX, color)
+    local b = New("TextButton", {
+        AnchorPoint      = Vector2.new(1, 0.5),
+        Position         = UDim2.new(1, -offsetX, 0, 28),
+        Size             = UDim2.fromOffset(30, 30),
+        BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+        BackgroundTransparency = 0.25,
+        Text             = text,
+        Font             = Enum.Font.GothamBold,
+        TextSize         = 15,
+        TextColor3       = color or Theme.Dark,
+        AutoButtonColor  = false,
+        ZIndex           = 13,
+        Parent           = TopBar,
+    })
+    Corner(b, 9)
+    Stroke(b, 1.2, Theme.White, 0.1)
+    b.MouseEnter:Connect(function() Tween(b, 0.15, { BackgroundTransparency = 0.05 }) end)
+    b.MouseLeave:Connect(function() Tween(b, 0.15, { BackgroundTransparency = 0.25 }) end)
+    return b
+end
+
+local CloseBtn = TopButton("✕", 16, Color3.fromRGB(200, 70, 70))
+local MinBtn   = TopButton("—", 54)
+
+--------------------------------- САЙДБАР ------------------------------
+local Sidebar = New("Frame", {
+    Name                   = "Sidebar",
+    Position               = UDim2.fromOffset(14, 62),
+    Size                   = UDim2.fromOffset(146, BASE_H - 76),
+    BackgroundColor3       = Theme.White,
+    BackgroundTransparency = 0.42,
+    BorderSizePixel        = 0,
+    ZIndex                 = 12,
+    Parent                 = Main,
+})
+Corner(Sidebar, 14)
+Stroke(Sidebar, 1.4, Theme.White, 0.08)
+
+local TabList = New("ScrollingFrame", {
+    Size                   = UDim2.new(1, -12, 1, -50),
+    Position               = UDim2.fromOffset(6, 8),
+    BackgroundTransparency = 1,
+    BorderSizePixel        = 0,
+    ScrollBarThickness     = 0,
+    AutomaticCanvasSize    = Enum.AutomaticSize.Y,
+    CanvasSize             = UDim2.new(),
+    ZIndex                 = 12,
+    Parent                 = Sidebar,
+})
+New("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder, Parent = TabList })
+
+local UserTag = New("TextLabel", {
+    AnchorPoint            = Vector2.new(0.5, 1),
+    Position               = UDim2.new(0.5, 0, 1, -10),
+    Size                   = UDim2.new(1, -16, 0, 30),
+    BackgroundColor3       = Theme.White,
+    BackgroundTransparency = 0.3,
+    Font                   = Enum.Font.GothamMedium,
+    Text                   = LP.Name,
+    TextSize               = 12,
+    TextColor3             = Theme.Sub,
+    TextTruncate           = Enum.TextTruncate.AtEnd,
+    ZIndex                 = 12,
+    Parent                 = Sidebar,
+})
+Corner(UserTag, 9)
+Stroke(UserTag, 1, Theme.White, 0.25)
+
+--------------------------------- КОНТЕНТ ------------------------------
+local Content = New("Frame", {
+    Name                   = "Content",
+    Position               = UDim2.fromOffset(170, 62),
+    Size                   = UDim2.fromOffset(BASE_W - 184, BASE_H - 76),
+    BackgroundTransparency = 1,
+    ZIndex                 = 12,
+    Parent                 = Main,
+})
+
+--======================================================================
+--                        БИБЛИОТЕКА ЭЛЕМЕНТОВ
+--======================================================================
+local Tabs, CurrentTab = {}, nil
+
+local function SelectTab(tab)
+    for _, t in ipairs(Tabs) do
+        local on = (t == tab)
+        t.page.Visible = on
+        Tween(t.btn, 0.18, { BackgroundTransparency = on and 0.12 or 1 })
+        Tween(t.label, 0.18, { TextColor3 = on and Theme.Text or Theme.Sub })
+        Tween(t.bar, 0.18, { BackgroundTransparency = on and 0 or 1,
+                             Size = UDim2.fromOffset(3, on and 18 or 4) })
+        t.icon.TextColor3 = on and Theme.Accent or Theme.Sub
+    end
+    CurrentTab = tab
+end
+
+local function AddTab(name, icon)
+    local btn = New("TextButton", {
+        Size                   = UDim2.new(1, 0, 0, 36),
+        BackgroundColor3       = Theme.White,
+        BackgroundTransparency = 1,
+        AutoButtonColor        = false,
+        Text                   = "",
+        ZIndex                 = 12,
+        Parent                 = TabList,
+    })
+    Corner(btn, 10)
+
+    local bar = New("Frame", {
+        AnchorPoint            = Vector2.new(0, 0.5),
+        Position               = UDim2.new(0, 4, 0.5, 0),
+        Size                   = UDim2.fromOffset(3, 4),
+        BackgroundColor3       = Theme.Accent,
+        BackgroundTransparency = 1,
+        BorderSizePixel        = 0,
+        ZIndex                 = 13,
+        Parent                 = btn,
+    })
+    Corner(bar, 2)
+
+    local ic = New("TextLabel", {
+        Position               = UDim2.fromOffset(12, 0),
+        Size                   = UDim2.new(0, 22, 1, 0),
+        BackgroundTransparency = 1,
+        Font                   = Enum.Font.GothamBold,
+        Text                   = icon or "•",
+        TextSize               = 14,
+        TextColor3             = Theme.Sub,
+        ZIndex                 = 13,
+        Parent                 = btn,
+    })
+
+    local lbl = New("TextLabel", {
+        Position               = UDim2.fromOffset(36, 0),
+        Size                   = UDim2.new(1, -42, 1, 0),
+        BackgroundTransparency = 1,
+        Font                   = Enum.Font.GothamMedium,
+        Text                   = name,
+        TextSize               = 13,
+        TextColor3             = Theme.Sub,
+        TextXAlignment         = Enum.TextXAlignment.Left,
+        ZIndex                 = 13,
+        Parent                 = btn,
+    })
+
+    local page = New("ScrollingFrame", {
+        Name                   = name,
+        Size                   = UDim2.fromScale(1, 1),
+        BackgroundTransparency = 1,
+        BorderSizePixel        = 0,
+        ScrollBarThickness     = 3,
+        ScrollBarImageColor3   = Color3.fromRGB(160, 175, 200),
+        ScrollBarImageTransparency = 0.3,
+        AutomaticCanvasSize    = Enum.AutomaticSize.Y,
+        CanvasSize             = UDim2.new(),
+        Visible                = false,
+        ZIndex                 = 12,
+        Parent                 = Content,
+    })
+    New("UIListLayout", { Padding = UDim.new(0, 7), SortOrder = Enum.SortOrder.LayoutOrder, Parent = page })
+    Pad(page, 2, 10, 2, 14)
+
+    local tab = { btn = btn, label = lbl, icon = ic, bar = bar, page = page }
+    table.insert(Tabs, tab)
+    btn.MouseButton1Click:Connect(function() SelectTab(tab) end)
+    if #Tabs == 1 then SelectTab(tab) end
+
+    ------------------------------------------------------------------
+    -- Элементы
+    ------------------------------------------------------------------
+    local API = {}
+
+    local function Card(h)
+        local f = New("Frame", {
+            Size                   = UDim2.new(1, 0, 0, h),
+            BackgroundColor3       = Theme.White,
+            BackgroundTransparency = 0.36,
+            BorderSizePixel        = 0,
+            ZIndex                 = 12,
+            Parent                 = page,
+        })
+        Corner(f, 11)
+        Stroke(f, 1.2, Theme.White, 0.12)
+        return f
+    end
+
+    function API:Section(text)
+        local l = New("TextLabel", {
+            Size                   = UDim2.new(1, 0, 0, 24),
+            BackgroundTransparency = 1,
+            Font                   = Enum.Font.GothamBold,
+            Text                   = "  " .. string.upper(text),
+            TextSize               = 11,
+            TextColor3             = Theme.Sub,
+            TextXAlignment         = Enum.TextXAlignment.Left,
+            ZIndex                 = 12,
+            Parent                 = page,
+        })
+        return l
+    end
+
+    -- Подсказка: высота подстраивается под текст (многострочно)
+    function API:Label(text)
+        local f = New("Frame", {
+            Size                   = UDim2.new(1, 0, 0, 0),
+            AutomaticSize          = Enum.AutomaticSize.Y,
+            BackgroundColor3       = Theme.White,
+            BackgroundTransparency = 0.36,
+            BorderSizePixel        = 0,
+            ZIndex                 = 12,
+            Parent                 = page,
+        })
+        Corner(f, 11)
+        Stroke(f, 1.2, Theme.White, 0.12)
+        Pad(f, 12, 12, 9, 9)
+        local l = New("TextLabel", {
+            Size                   = UDim2.new(1, 0, 0, 0),
+            AutomaticSize          = Enum.AutomaticSize.Y,
+            BackgroundTransparency = 1,
+            Font                   = Enum.Font.Gotham,
+            Text                   = text,
+            TextSize               = 12,
+            TextColor3             = Theme.Sub,
+            TextXAlignment         = Enum.TextXAlignment.Left,
+            TextYAlignment         = Enum.TextYAlignment.Top,
+            TextWrapped            = true,
+            RichText               = true,
+            ZIndex                 = 13,
+            Parent                 = f,
+        })
+        return l
+    end
+
+    function API:Toggle(text, default, callback)
+        local f = Card(40)
+        New("TextLabel", {
+            Size                   = UDim2.new(1, -80, 1, 0),
+            Position               = UDim2.fromOffset(13, 0),
+            BackgroundTransparency = 1,
+            Font                   = Enum.Font.GothamMedium,
+            Text                   = text,
+            TextSize               = 13,
+            TextColor3             = Theme.Text,
+            TextXAlignment         = Enum.TextXAlignment.Left,
+            TextTruncate           = Enum.TextTruncate.AtEnd,
+            ZIndex                 = 13,
+            Parent                 = f,
+        })
+
+        local track = New("Frame", {
+            AnchorPoint      = Vector2.new(1, 0.5),
+            Position         = UDim2.new(1, -12, 0.5, 0),
+            Size             = UDim2.fromOffset(46, 24),
+            BackgroundColor3 = Theme.Soft,
+            BorderSizePixel  = 0,
+            ZIndex           = 13,
+            Parent           = f,
+        })
+        Corner(track, 12)
+        Stroke(track, 1.2, Theme.White, 0.15)
+
+        local knob = New("Frame", {
+            AnchorPoint      = Vector2.new(0, 0.5),
+            Position         = UDim2.new(0, 3, 0.5, 0),
+            Size             = UDim2.fromOffset(18, 18),
+            BackgroundColor3 = Theme.White,
+            BorderSizePixel  = 0,
+            ZIndex           = 14,
+            Parent           = track,
+        })
+        Corner(knob, 9)
+        Stroke(knob, 1, Color3.fromRGB(205, 214, 228), 0.2)
+
+        local hit = New("TextButton", {
+            Size                   = UDim2.fromScale(1, 1),
+            BackgroundTransparency = 1,
+            Text                   = "",
+            ZIndex                 = 15,
+            Parent                 = f,
+        })
+
+        local state = default and true or false
+        local function render(anim)
+            local t = anim and 0.18 or 0
+            Tween(track, t, { BackgroundColor3 = state and Theme.Accent or Theme.Soft })
+            Tween(knob,  t, { Position = state and UDim2.new(1, -21, 0.5, 0) or UDim2.new(0, 3, 0.5, 0) })
+            Tween(f, t, { BackgroundTransparency = state and 0.18 or 0.36 })
+        end
+        render(false)
+
+        local obj = {}
+        function obj:Set(v, silent)
+            state = v and true or false
+            render(true)
+            if not silent then pcall(callback, state) end
+        end
+        function obj:Get() return state end
+
+        hit.MouseButton1Click:Connect(function() obj:Set(not state) end)
+        if default then task.defer(function() pcall(callback, true) end) end
+        return obj
+    end
+
+    function API:Slider(text, min, max, default, dec, callback)
+        local f = Card(54)
+        local title = New("TextLabel", {
+            Size                   = UDim2.new(1, -80, 0, 20),
+            Position               = UDim2.fromOffset(13, 7),
+            BackgroundTransparency = 1,
+            Font                   = Enum.Font.GothamMedium,
+            Text                   = text,
+            TextSize               = 13,
+            TextColor3             = Theme.Text,
+            TextXAlignment         = Enum.TextXAlignment.Left,
+            ZIndex                 = 13,
+            Parent                 = f,
+        })
+        local valueLbl = New("TextLabel", {
+            AnchorPoint            = Vector2.new(1, 0),
+            Position               = UDim2.new(1, -13, 0, 7),
+            Size                   = UDim2.fromOffset(70, 20),
+            BackgroundTransparency = 1,
+            Font                   = Enum.Font.GothamBold,
+            Text                   = tostring(default),
+            TextSize               = 13,
+            TextColor3             = Theme.Accent,
+            TextXAlignment         = Enum.TextXAlignment.Right,
+            ZIndex                 = 13,
+            Parent                 = f,
+        })
+
+        local bar = New("Frame", {
+            Position         = UDim2.fromOffset(13, 36),
+            Size             = UDim2.new(1, -26, 0, 6),
+            BackgroundColor3 = Theme.Soft,
+            BorderSizePixel  = 0,
+            ZIndex           = 13,
+            Parent           = f,
+        })
+        Corner(bar, 3)
+
+        local fill = New("Frame", {
+            Size             = UDim2.fromScale(0, 1),
+            BackgroundColor3 = Theme.Accent,
+            BorderSizePixel  = 0,
+            ZIndex           = 14,
+            Parent           = bar,
+        })
+        Corner(fill, 3)
+
+        local knob = New("Frame", {
+            AnchorPoint      = Vector2.new(0.5, 0.5),
+            Position         = UDim2.fromScale(0, 0.5),
+            Size             = UDim2.fromOffset(16, 16),
+            BackgroundColor3 = Theme.White,
+            BorderSizePixel  = 0,
+            ZIndex           = 15,
+            Parent           = bar,
+        })
+        Corner(knob, 8)
+        Stroke(knob, 1.4, Theme.Accent, 0.15)
+
+        -- увеличенная зона нажатия для пальца
+        local hit = New("TextButton", {
+            Position               = UDim2.fromOffset(0, 24),
+            Size                   = UDim2.new(1, 0, 0, 30),
+            BackgroundTransparency = 1,
+            Text                   = "",
+            ZIndex                 = 16,
+            Parent                 = f,
+        })
+
+        local value = default
+        local function apply(v, fire)
+            value = math.clamp(Round(v, dec or 0), min, max)
+            local a = (max - min) == 0 and 0 or (value - min) / (max - min)
+            valueLbl.Text  = tostring(value)
+            fill.Size      = UDim2.fromScale(a, 1)
+            knob.Position  = UDim2.fromScale(a, 0.5)
+            if fire then pcall(callback, value) end
+        end
+        apply(default, false)
+
+        local dragging = false
+        local function fromX(x)
+            local a = math.clamp((x - bar.AbsolutePosition.X) / math.max(bar.AbsoluteSize.X, 1), 0, 1)
+            apply(min + (max - min) * a, true)
+        end
+
+        hit.InputBegan:Connect(function(i)
+            if i.UserInputType == Enum.UserInputType.MouseButton1
+            or i.UserInputType == Enum.UserInputType.Touch then
+                dragging = true
+                fromX(i.Position.X)
+            end
+        end)
+        hit.InputEnded:Connect(function(i)
+            if i.UserInputType == Enum.UserInputType.MouseButton1
+            or i.UserInputType == Enum.UserInputType.Touch then
+                dragging = false
+            end
+        end)
+        Bind(UserInputService.InputChanged, function(i)
+            if dragging and (i.UserInputType == Enum.UserInputType.MouseMovement
+            or i.UserInputType == Enum.UserInputType.Touch) then
+                fromX(i.Position.X)
+            end
+        end)
+        Bind(UserInputService.InputEnded, function(i)
+            if i.UserInputType == Enum.UserInputType.MouseButton1
+            or i.UserInputType == Enum.UserInputType.Touch then
+                dragging = false
+            end
+        end)
+
+        local obj = {}
+        function obj:Set(v) apply(v, true) end
+        function obj:Get() return value end
+        if default ~= nil then task.defer(function() pcall(callback, value) end) end
+        return obj
+    end
+
+    function API:Dropdown(text, options, default, callback)
+        local rowH   = 34
+        local optH   = 30
+        local holder = New("Frame", {
+            Size                   = UDim2.new(1, 0, 0, 42),
+            BackgroundColor3       = Theme.White,
+            BackgroundTransparency = 0.36,
+            BorderSizePixel        = 0,
+            ClipsDescendants       = true,
+            ZIndex                 = 12,
+            Parent                 = page,
+        })
+        Corner(holder, 11)
+        Stroke(holder, 1.2, Theme.White, 0.12)
+
+        local head = New("TextButton", {
+            Size                   = UDim2.new(1, 0, 0, 42),
+            BackgroundTransparency = 1,
+            Text                   = "",
+            ZIndex                 = 13,
+            Parent                 = holder,
+        })
+        New("TextLabel", {
+            Size                   = UDim2.new(0.5, -13, 1, 0),
+            Position               = UDim2.fromOffset(13, 0),
+            BackgroundTransparency = 1,
+            Font                   = Enum.Font.GothamMedium,
+            Text                   = text,
+            TextSize               = 13,
+            TextColor3             = Theme.Text,
+            TextXAlignment         = Enum.TextXAlignment.Left,
+            ZIndex                 = 14,
+            Parent                 = head,
+        })
+        local cur = New("TextLabel", {
+            AnchorPoint            = Vector2.new(1, 0),
+            Position               = UDim2.new(1, -30, 0, 0),
+            Size                   = UDim2.new(0.5, 0, 1, 0),
+            BackgroundTransparency = 1,
+            Font                   = Enum.Font.GothamBold,
+            Text                   = tostring(default),
+            TextSize               = 12,
+            TextColor3             = Theme.Accent,
+            TextXAlignment         = Enum.TextXAlignment.Right,
+            TextTruncate           = Enum.TextTruncate.AtEnd,
+            ZIndex                 = 14,
+            Parent                 = head,
+        })
+        local arrow = New("TextLabel", {
+            AnchorPoint            = Vector2.new(1, 0.5),
+            Position               = UDim2.new(1, -12, 0.5, 0),
+            Size                   = UDim2.fromOffset(14, 14),
+            BackgroundTransparency = 1,
+            Font                   = Enum.Font.GothamBold,
+            Text                   = "▾",
+            TextSize               = 12,
+            TextColor3             = Theme.Sub,
+            ZIndex                 = 14,
+            Parent                 = head,
+        })
+
+        local list = New("Frame", {
+            Position               = UDim2.fromOffset(0, 42),
+            Size                   = UDim2.new(1, 0, 0, #options * optH + 6),
+            BackgroundTransparency = 1,
+            ZIndex                 = 13,
+            Parent                 = holder,
+        })
+        New("UIListLayout", { Padding = UDim.new(0, 2), SortOrder = Enum.SortOrder.LayoutOrder, Parent = list })
+        Pad(list, 8, 8, 0, 6)
+
+        local selected = default
+        local open     = false
+        local optBtns  = {}
+
+        local function paint()
+            for name, b in pairs(optBtns) do
+                local on = (name == selected)
+                b.BackgroundTransparency = on and 0.15 or 0.72
+                b.TextColor3 = on and Theme.Text or Theme.Sub
+            end
+            cur.Text = tostring(selected)
+        end
+
+        for _, opt in ipairs(options) do
+            local b = New("TextButton", {
+                Size                   = UDim2.new(1, 0, 0, optH - 2),
+                BackgroundColor3       = Theme.White,
+                BackgroundTransparency = 0.72,
+                Font                   = Enum.Font.Gotham,
+                Text                   = tostring(opt),
+                TextSize               = 12,
+                TextColor3             = Theme.Sub,
+                AutoButtonColor        = false,
+                ZIndex                 = 14,
+                Parent                 = list,
+            })
+            Corner(b, 8)
+            optBtns[opt] = b
+            b.MouseButton1Click:Connect(function()
+                selected = opt
+                paint()
+                pcall(callback, opt)
+            end)
+        end
+        paint()
+
+        head.MouseButton1Click:Connect(function()
+            open = not open
+            Tween(holder, 0.22, { Size = UDim2.new(1, 0, 0, open and (42 + #options * optH + 6) or 42) })
+            Tween(arrow, 0.22, { Rotation = open and 180 or 0 })
+        end)
+
+        local obj = {}
+        function obj:Set(v) selected = v paint() pcall(callback, v) end
+        function obj:Get() return selected end
+        return obj
+    end
+
+    function API:Button(text, callback)
+        local f = New("TextButton", {
+            Size                   = UDim2.new(1, 0, 0, 38),
+            BackgroundColor3       = Theme.White,
+            BackgroundTransparency = 0.28,
+            Font                   = Enum.Font.GothamBold,
+            Text                   = text,
+            TextSize               = 13,
+            TextColor3             = Theme.Text,
+            AutoButtonColor        = false,
+            ZIndex                 = 12,
+            Parent                 = page,
+        })
+        Corner(f, 11)
+        Stroke(f, 1.2, Theme.White, 0.1)
+        f.MouseButton1Click:Connect(function()
+            Tween(f, 0.08, { BackgroundTransparency = 0.05 })
+            task.delay(0.12, function() Tween(f, 0.15, { BackgroundTransparency = 0.28 }) end)
+            pcall(callback)
+        end)
+        return f
+    end
+
+    function API:Textbox(text, placeholder, callback)
+        local f = Card(44)
+        New("TextLabel", {
+            Size                   = UDim2.new(0.42, -13, 1, 0),
+            Position               = UDim2.fromOffset(13, 0),
+            BackgroundTransparency = 1,
+            Font                   = Enum.Font.GothamMedium,
+            Text                   = text,
+            TextSize               = 13,
+            TextColor3             = Theme.Text,
+            TextXAlignment         = Enum.TextXAlignment.Left,
+            ZIndex                 = 13,
+            Parent                 = f,
+        })
+        local box = New("TextBox", {
+            AnchorPoint            = Vector2.new(1, 0.5),
+            Position               = UDim2.new(1, -12, 0.5, 0),
+            Size                   = UDim2.new(0.55, 0, 0, 28),
+            BackgroundColor3       = Theme.White,
+            BackgroundTransparency = 0.25,
+            Font                   = Enum.Font.Gotham,
+            PlaceholderText        = placeholder or "",
+            Text                   = "",
+            TextSize               = 12,
+            TextColor3             = Theme.Text,
+            ClearTextOnFocus       = false,
+            ZIndex                 = 13,
+            Parent                 = f,
+        })
+        Corner(box, 8)
+        Stroke(box, 1, Theme.White, 0.2)
+        box.FocusLost:Connect(function(enter)
+            if enter then pcall(callback, box.Text) end
+        end)
+        return box
+    end
+
+    return API
+end
+
+--======================================================================
+--                          УВЕДОМЛЕНИЯ
+--======================================================================
+local ToastHolder = New("Frame", {
+    AnchorPoint            = Vector2.new(0.5, 0),
+    Position               = UDim2.new(0.5, 0, 0, 14),
+    Size                   = UDim2.fromOffset(300, 200),
+    BackgroundTransparency = 1,
+    ZIndex                 = 40,
+    Parent                 = GUIROOT,
+})
+New("UIListLayout", {
+    Padding          = UDim.new(0, 6),
+    HorizontalAlignment = Enum.HorizontalAlignment.Center,
+    SortOrder        = Enum.SortOrder.LayoutOrder,
+    Parent           = ToastHolder,
+})
+
+local function Notify(text, color)
+    local f = New("Frame", {
+        Size                   = UDim2.fromOffset(280, 36),
+        BackgroundColor3       = Color3.fromRGB(255, 255, 255),
+        BackgroundTransparency = 1,
+        BorderSizePixel        = 0,
+        ZIndex                 = 41,
+        Parent                 = ToastHolder,
+    })
+    Corner(f, 10)
+    local st = Stroke(f, 1.4, Theme.White, 1)
+    local bar = New("Frame", {
+        Size             = UDim2.fromOffset(4, 20),
+        Position         = UDim2.new(0, 10, 0.5, -10),
+        BackgroundColor3 = color or Theme.Accent,
+        BorderSizePixel  = 0,
+        ZIndex           = 42,
+        Parent           = f,
+    })
+    Corner(bar, 2)
+    local l = New("TextLabel", {
+        Position               = UDim2.fromOffset(22, 0),
+        Size                   = UDim2.new(1, -30, 1, 0),
+        BackgroundTransparency = 1,
+        Font                   = Enum.Font.GothamMedium,
+        Text                   = text,
+        TextSize               = 12,
+        TextColor3             = Theme.Text,
+        TextTransparency       = 1,
+        TextXAlignment         = Enum.TextXAlignment.Left,
+        ZIndex                 = 42,
+        Parent                 = f,
+    })
+    Tween(f, 0.2, { BackgroundTransparency = 0.08 })
+    Tween(st, 0.2, { Transparency = 0.1 })
+    Tween(l, 0.2, { TextTransparency = 0 })
+    task.delay(2.2, function()
+        Tween(f, 0.3, { BackgroundTransparency = 1 })
+        Tween(st, 0.3, { Transparency = 1 })
+        Tween(l, 0.3, { TextTransparency = 1 })
+        Tween(bar, 0.3, { BackgroundTransparency = 1 })
+        task.delay(0.35, function() f:Destroy() end)
+    end)
+end
+
+--======================================================================
+--            ОТСЛЕЖИВАНИЕ ОТВОДА КАМЕРЫ (срыв цели аима)
+--======================================================================
+Bind(UserInputService.InputChanged, function(input, gameProcessed)
+    if not S.Aim.Enabled then return end
+    if input.UserInputType == Enum.UserInputType.MouseMovement then
+        panEnergy = panEnergy + Vector2.new(input.Delta.X, input.Delta.Y).Magnitude
+    elseif input.UserInputType == Enum.UserInputType.Touch and not gameProcessed then
+        -- считаем только свайпы в правой части экрана (зона поворота камеры),
+        -- чтобы джойстик движения не сбрасывал цель
+        local vp = Camera.ViewportSize
+        if input.Position.X > vp.X * 0.38 then
+            panEnergy = panEnergy + Vector2.new(input.Delta.X, input.Delta.Y).Magnitude
+        end
+    end
+end)
+
+--======================================================================
+--                  МОБИЛЬНЫЕ КНОПКИ ПОЛЁТА (вверх/вниз)
+--======================================================================
+local FlyPad = New("Frame", {
+    Name                   = "FlyPad",
+    AnchorPoint            = Vector2.new(1, 1),
+    Position               = UDim2.new(1, -24, 1, -140),
+    Size                   = UDim2.fromOffset(58, 128),
+    BackgroundTransparency = 1,
+    Visible                = false,
+    ZIndex                 = 20,
+    Parent                 = GUIROOT,
+})
+
+local function PadButton(txt, y, onDown, onUp)
+    local b = New("TextButton", {
+        Position               = UDim2.fromOffset(0, y),
+        Size                   = UDim2.fromOffset(58, 58),
+        BackgroundColor3       = Theme.White,
+        BackgroundTransparency = 0.25,
+        Font                   = Enum.Font.GothamBold,
+        Text                   = txt,
+        TextSize               = 20,
+        TextColor3             = Theme.Text,
+        AutoButtonColor        = false,
+        ZIndex                 = 21,
+        Parent                 = FlyPad,
+    })
+    Corner(b, 29)
+    Stroke(b, 1.6, Theme.White, 0.05)
+    b.InputBegan:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1
+        or i.UserInputType == Enum.UserInputType.Touch then
+            onDown()
+            Tween(b, 0.1, { BackgroundTransparency = 0.05 })
+        end
+    end)
+    b.InputEnded:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1
+        or i.UserInputType == Enum.UserInputType.Touch then
+            onUp()
+            Tween(b, 0.15, { BackgroundTransparency = 0.25 })
+        end
+    end)
+    return b
+end
+
+PadButton("▲", 0,  function() Fly.up = true end,   function() Fly.up = false end)
+PadButton("▼", 70, function() Fly.down = true end, function() Fly.down = false end)
+
+--======================================================================
+--                    ПЛАВАЮЩАЯ КНОПКА ОТКРЫТИЯ
+--======================================================================
+local OpenBtn = New("TextButton", {
+    Name                   = "EloOpen",
+    AnchorPoint            = Vector2.new(0, 0.5),
+    Position               = UDim2.new(0, 18, 0.32, 0),
+    Size                   = UDim2.fromOffset(52, 52),
+    BackgroundColor3       = Theme.White,
+    BackgroundTransparency = 0.15,
+    Font                   = Enum.Font.GothamBlack,
+    Text                   = "E",
+    TextSize               = 22,
+    TextColor3             = Theme.Text,
+    AutoButtonColor        = false,
+    ZIndex                 = 30,
+    Parent                 = GUIROOT,
+})
+Corner(OpenBtn, 26)
+Stroke(OpenBtn, 2, Theme.White, 0.02)
+New("UIGradient", {
+    Rotation = 40,
+    Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 255, 255)),
+        ColorSequenceKeypoint.new(1, Color3.fromRGB(216, 226, 240)),
+    }),
+    Parent = OpenBtn,
+})
+Dragify(OpenBtn)
+
+--======================================================================
+--                     ОТКРЫТИЕ / ЗАКРЫТИЕ МЕНЮ
+--======================================================================
+local menuOpen, collapsed = false, false
+
+local function ApplyScale()
+    local vp = Camera.ViewportSize
+    S.UI.Auto = math.clamp(math.min(vp.Y / 760, vp.X / 1000), 0.45, 1)
+    UIS_Scale.Scale = S.UI.Auto * S.UI.Scale
+end
+ApplyScale()
+Bind(Camera:GetPropertyChangedSignal("ViewportSize"), ApplyScale)
+
+local function SetMenu(open)
+    menuOpen = open
+    if open then
+        Main.Visible = true
+        Main.Size    = UDim2.fromOffset(BASE_W * 0.55, BASE_H * 0.55)
+        MainStroke.Transparency = 1
+        Tween(Main, 0.38, { Size = UDim2.fromOffset(BASE_W, collapsed and 56 or BASE_H) },
+              Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+        Tween(MainStroke, 0.4, { Transparency = 0.05 })
+        Tween(OpenBtn, 0.2, { BackgroundTransparency = 0.55, TextTransparency = 0.5 })
+    else
+        Tween(Main, 0.24, { Size = UDim2.fromOffset(BASE_W * 0.6, BASE_H * 0.6) },
+              Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+        Tween(MainStroke, 0.2, { Transparency = 1 })
+        Tween(OpenBtn, 0.2, { BackgroundTransparency = 0.15, TextTransparency = 0 })
+        task.delay(0.26, function() if not menuOpen then Main.Visible = false end end)
+    end
+end
+
+do
+    local pressing, pressPos = false, nil
+    OpenBtn.InputBegan:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1
+        or i.UserInputType == Enum.UserInputType.Touch then
+            pressing, pressPos = true, i.Position
+        end
+    end)
+    Bind(UserInputService.InputEnded, function(i)
+        if pressing and (i.UserInputType == Enum.UserInputType.MouseButton1
+        or i.UserInputType == Enum.UserInputType.Touch) then
+            pressing = false
+            if pressPos and (i.Position - pressPos).Magnitude < 14 then
+                SetMenu(not menuOpen)
+            end
+        end
+    end)
+end
+
+CloseBtn.MouseButton1Click:Connect(function() SetMenu(false) end)
+MinBtn.MouseButton1Click:Connect(function()
+    collapsed = not collapsed
+    Tween(Main, 0.28, { Size = UDim2.fromOffset(BASE_W, collapsed and 56 or BASE_H) })
+end)
+
+Dragify(Main, TopBar)
+
+-- Горячая клавиша для ПК
+Bind(UserInputService.InputBegan, function(i, gp)
+    if gp then return end
+    if i.KeyCode == Enum.KeyCode.RightShift or i.KeyCode == Enum.KeyCode.Insert then
+        SetMenu(not menuOpen)
+    end
+end)
+
+--======================================================================
+--                          СОДЕРЖИМОЕ МЕНЮ
+--======================================================================
+local Panic = {}   -- тоглы, которые выключает кнопка "паника"
+
+local Home     = AddTab("Главная",   "◆")
+local PlayerT  = AddTab("Игрок",     "◈")
+local VisualT  = AddTab("Визуал",    "◉")
+local AimT     = AddTab("Аим",       "✛")
+local MiscT    = AddTab("Прочее",    "✦")
+local SetsT    = AddTab("Настройки", "⚙")
+
+----------------------------- ГЛАВНАЯ ----------------------------------
+Home:Section("Статус")
+local RoleLabel = Home:Label("Твоя роль: <b>...</b>")
+local CoinLabel = Home:Label("Монет собрано: <b>0</b>")
+local PingLabel = Home:Label("Игроков на сервере: <b>0</b>")
+
+Home:Section("Легенда ESP")
+Home:Label('<font color="rgb(255,62,62)">■ УБИЙЦА</font>   <font color="rgb(58,132,255)">■ ШЕРИФ</font>   <font color="rgb(52,224,122)">■ НЕВИННЫЙ</font>')
+
+Home:Section("Быстрые действия")
+Home:Button("Сбросить персонажа", function()
+    local h = Hum(LP)
+    if h then h.Health = 0 end
+    Notify("Персонаж сброшен")
+end)
+Home:Button("Выключить всё (паника)", function()
+    for _, t in ipairs(Panic) do pcall(function() t:Set(false) end) end
+    Notify("Все функции выключены", Color3.fromRGB(220, 90, 90))
+end)
+Home:Label("ПК: <b>RightShift</b> или <b>Insert</b> — открыть/закрыть меню.\nТелефон: круглая кнопка <b>E</b> (её можно перетаскивать).")
+
+------------------------------ ИГРОК -----------------------------------
+PlayerT:Section("Движение")
+table.insert(Panic, PlayerT:Toggle("Спид хак", false, function(v)
+    S.Speed.Enabled = v
+    if not v then Speed.Reset() end
+    Notify("Спид хак: " .. (v and "ВКЛ" or "ВЫКЛ"))
+end))
+PlayerT:Slider("Скорость", 16, 250, 32, 0, function(v) S.Speed.Value = v end)
+PlayerT:Dropdown("Режим скорости", { "CFrame", "WalkSpeed" }, "CFrame", function(v)
+    S.Speed.Mode = v
+    Speed.Reset()
+end)
+PlayerT:Label("<b>CFrame</b> — мягкий сдвиг, работает с джойстиком и реже ловится античитом.\n<b>WalkSpeed</b> — классика, быстрее, но заметнее.")
+
+PlayerT:Section("Прыжок")
+table.insert(Panic, PlayerT:Toggle("Высокий прыжок", false, function(v)
+    S.Jump.Enabled = v
+    Jump.Apply()
+end))
+PlayerT:Slider("Сила прыжка", 50, 350, 50, 0, function(v)
+    S.Jump.Value = v
+    Jump.Apply()
+end)
+
+PlayerT:Section("Проходимость")
+table.insert(Panic, PlayerT:Toggle("Wallhack — проход сквозь стены", false, function(v)
+    S.Noclip.Enabled = v
+    if not v then
+        local c = Char(LP)
+        if c then
+            for _, p in ipairs(c:GetDescendants()) do
+                if p:IsA("BasePart") and p.Name ~= "HumanoidRootPart" then
+                    pcall(function() p.CanCollide = true end)
+                end
+            end
+        end
+    end
+    Notify("Wallhack: " .. (v and "ВКЛ" or "ВЫКЛ"))
+end))
+
+PlayerT:Section("Полёт")
+table.insert(Panic, PlayerT:Toggle("Полёт", false, function(v)
+    S.Fly.Enabled = v
+    FlyPad.Visible = v
+    if v then Fly.On() else Fly.Off() end
+    Notify("Полёт: " .. (v and "ВКЛ" or "ВЫКЛ"))
+end))
+PlayerT:Slider("Скорость полёта", 20, 300, 60, 0, function(v) S.Fly.Speed = v end)
+PlayerT:Label("Направление — джойстик/WASD, высота — кнопки <b>▲ ▼</b> справа (на ПК ещё Space / Ctrl).")
+
+------------------------------ ВИЗУАЛ ----------------------------------
+VisualT:Section("ESP игроков")
+table.insert(Panic, VisualT:Toggle("Включить ESP", false, function(v)
+    S.ESP.Enabled = v
+    if not v then ESP.SetAll(false) end
+    Notify("ESP: " .. (v and "ВКЛ" or "ВЫКЛ"))
+end))
+VisualT:Toggle("Заливка тела (Chams)", true, function(v) S.ESP.Chams = v end)
+VisualT:Toggle("Имена", true,      function(v) S.ESP.Names = v end)
+VisualT:Toggle("Роль", true,       function(v) S.ESP.Role = v end)
+VisualT:Toggle("Дистанция", true,  function(v) S.ESP.Distance = v end)
+VisualT:Toggle("Трейсеры (линии)", false, function(v) S.ESP.Tracers = v end)
+VisualT:Slider("Дальность ESP", 100, 3000, 1200, 0, function(v) S.ESP.MaxDist = v end)
+VisualT:Label('Цвета: <font color="rgb(255,62,62)">убийца</font> / <font color="rgb(58,132,255)">шериф</font> / <font color="rgb(52,224,122)">невинный</font>. Роль определяется по ножу и револьверу, обновляется автоматически.')
+
+VisualT:Section("Стены")
+table.insert(Panic, VisualT:Toggle("Прозрачные стены", false, function(v)
+    S.Walls.Enabled = v
+    if v then Walls.Enable() else Walls.Disable() end
+    Notify("Прозрачность стен: " .. (v and "ВКЛ" or "ВЫКЛ"))
+end))
+VisualT:Slider("Уровень прозрачности", 0, 1, 0.65, 2, function(v)
+    S.Walls.Value = v
+    Walls.Refresh()
+end)
+VisualT:Button("Обновить стены (после новой карты)", function()
+    if S.Walls.Enabled then Walls.Enable() Notify("Стены обновлены") end
+end)
+
+------------------------------- АИМ ------------------------------------
+AimT:Section("Захват цели")
+table.insert(Panic, AimT:Toggle("Включить AIM", false, function(v)
+    S.Aim.Enabled = v
+    if not v then S.Aim.Target = nil end
+    Notify("AIM: " .. (v and "ВКЛ" or "ВЫКЛ"))
+end))
+AimT:Dropdown("Приоритет цели",
+    { "Авто (по роли)", "Только убийца", "Только шериф", "Любой игрок" },
+    "Авто (по роли)", function(v) S.Aim.Mode = v S.Aim.Target = nil end)
+AimT:Dropdown("Точка прицеливания", { "Head", "HumanoidRootPart" }, "Head",
+    function(v) S.Aim.Part = v end)
+
+AimT:Section("Настройка")
+AimT:Slider("Жёсткость лока (1 = хард)", 0.05, 1, 0.35, 2, function(v) S.Aim.Smooth = v end)
+AimT:Slider("Дальность захвата (studs)", 50, 2000, 400, 0, function(v) S.Aim.Dist = v end)
+AimT:Slider("Площадь захвата (радиус, px)", 30, 700, 150, 0, function(v) S.Aim.FOV = v end)
+AimT:Slider("Радиус срыва цели (px)", 60, 1000, 300, 0, function(v) S.Aim.LoseFOV = v end)
+AimT:Slider("Чувствительность срыва", 20, 400, 90, 0, function(v) S.Aim.Unlock = v end)
+AimT:Toggle("Показывать круг захвата", true, function(v) S.Aim.ShowFOV = v end)
+AimT:Toggle("Только видимые цели", false, function(v) S.Aim.VisCheck = v end)
+
+AimT:Section("Как работает")
+AimT:Label("Цель ловится, если она внутри круга захвата и ближе дальности. Пока цель держится — камера жёстко ведёт её.\nЕсли <b>отвести камеру</b> (свайп по правой половине экрана / мышь) сильнее чувствительности срыва — цель отпускается.")
+AimT:Label("Авто-режим: ты <font color=\"rgb(255,62,62)\">убийца</font> → цели шериф и невинные. Ты <font color=\"rgb(58,132,255)\">шериф</font> → только убийца. Ты невинный → убийца.")
+
+------------------------------ ПРОЧЕЕ ----------------------------------
+MiscT:Section("Монеты (" .. CONFIG.CoinName .. " в " .. CONFIG.CoinFolder .. ")")
+table.insert(Panic, MiscT:Toggle("Авто-сбор монет", false, function(v)
+    S.Coins.Enabled = v
+    Notify("Авто-сбор монет: " .. (v and "ВКЛ" or "ВЫКЛ"))
+end))
+MiscT:Slider("Радиус сбора", 50, 2000, 400, 0, function(v) S.Coins.Radius = v end)
+MiscT:Slider("Задержка между монетами", 0.02, 1, 0.12, 2, function(v) S.Coins.Delay = v end)
+MiscT:Toggle("Телепорт-режим (если нет firetouchinterest)", false, function(v) S.Coins.Teleport = v end)
+local CoinLabel2 = MiscT:Label("Собрано за сессию: <b>0</b>")
+MiscT:Label(firetouch and "Метод: <b>firetouchinterest</b> — монеты собираются без телепорта."
+                       or "В твоём эксплойте нет <b>firetouchinterest</b> — включи телепорт-режим.")
+
+MiscT:Section("Тело")
+table.insert(Panic, MiscT:Toggle("Фейк рагдолл", false, function(v)
+    if v then Ragdoll.On() else Ragdoll.Off() end
+    Notify("Фейк рагдолл: " .. (v and "ВКЛ" or "ВЫКЛ"))
+end))
+MiscT:Label("Оставляет на месте «тело», а твой персонаж становится невидимым для тебя и продолжает двигаться. Эффект локальный (виден только тебе).")
+MiscT:Button("Сбросить персонажа", function()
+    Ragdoll.Off()
+    local h = Hum(LP)
+    if h then h.Health = 0 end
+end)
+
+---------------------------- НАСТРОЙКИ ---------------------------------
+SetsT:Section("Интерфейс")
+SetsT:Slider("Размер UI", 0.6, 1.6, 1, 2, function(v)
+    S.UI.Scale = v
+    ApplyScale()
+end)
+SetsT:Textbox("ID фона", "rbxassetid://...", function(txt)
+    txt = (txt or ""):gsub("%s+", "")
+    if txt == "" then return end
+    if not txt:match("^rbxassetid://") then txt = "rbxassetid://" .. txt:gsub("%D", "") end
+    CONFIG.BackgroundId = txt
+    BGImage.Image             = txt
+    BGImage.ImageTransparency = 0
+    BGImage.Visible           = true
+    BGSilk.Visible            = false
+    Notify("Фон обновлён")
+end)
+SetsT:Button("Вернуть стандартный фон", function()
+    CONFIG.BackgroundId = ""
+    BGImage.Visible = false
+    BGSilk.Visible  = true
+    Notify("Фон по умолчанию")
+end)
+SetsT:Button("Меню по центру", function()
+    Main.Position = UDim2.fromScale(0.5, 0.5)
+end)
+
+SetsT:Section("Система")
+SetsT:Button("Выключить все функции", function()
+    for _, t in ipairs(Panic) do pcall(function() t:Set(false) end) end
+    Notify("Все функции выключены", Color3.fromRGB(220, 90, 90))
+end)
+SetsT:Button("Выгрузить EloHub", function()
+    if _G.EloHub_Unload then _G.EloHub_Unload() end
+end)
+SetsT:Label("<b>EloHub</b> • Murder Mystery 2 • Mobile Edition\nВсе функции клиентские. Используй на своём плейсе / приватном сервере.")
+
+--======================================================================
+--                       ЖИВЫЕ ЛЕЙБЛЫ (статус)
+--======================================================================
+task.spawn(function()
+    while not Unloaded do
+        pcall(function()
+            local role = MyRole()
+            local col  = RoleColor(role)
+            RoleLabel.Text = string.format(
+                'Твоя роль: <b><font color="rgb(%d,%d,%d)">%s</font></b>',
+                math.floor(col.R * 255), math.floor(col.G * 255), math.floor(col.B * 255),
+                RoleRU[role])
+            CoinLabel.Text  = "Монет собрано: <b>" .. S.Coins.Collected .. "</b>"
+            CoinLabel2.Text = "Собрано за сессию: <b>" .. S.Coins.Collected .. "</b>"
+            PingLabel.Text  = "Игроков на сервере: <b>" .. #Players:GetPlayers() .. "</b>"
+        end)
+        task.wait(0.5)
+    end
+end)
+
+--======================================================================
+--                        ИНТРО-АНИМАЦИЯ EloHub
+--======================================================================
+local function PlayIntro(done)
+    local scrim = New("Frame", {
+        Size                   = UDim2.fromScale(1, 1),
+        BackgroundColor3       = Color3.fromRGB(18, 22, 32),
+        BackgroundTransparency = 1,
+        BorderSizePixel        = 0,
+        ZIndex                 = 50,
+        Parent                 = GUIROOT,
+    })
+
+    local ring = New("Frame", {
+        AnchorPoint            = Vector2.new(0.5, 0.5),
+        Position               = UDim2.fromScale(0.5, 0.5),
+        Size                   = UDim2.fromOffset(10, 10),
+        BackgroundTransparency = 1,
+        ZIndex                 = 51,
+        Parent                 = scrim,
+    })
+    New("UICorner", { CornerRadius = UDim.new(1, 0), Parent = ring })
+    local ringStroke = New("UIStroke", {
+        Thickness = 2, Color = Color3.fromRGB(255, 255, 255), Transparency = 1, Parent = ring })
+
+    local ring2 = ring:Clone()
+    ring2.Parent = scrim
+    local ringStroke2 = ring2:FindFirstChildOfClass("UIStroke")
+
+    local logo = New("TextLabel", {
+        AnchorPoint            = Vector2.new(0.5, 0.5),
+        Position               = UDim2.fromScale(0.5, 0.5),
+        Size                   = UDim2.fromOffset(420, 74),
+        BackgroundTransparency = 1,
+        Font                   = Enum.Font.GothamBlack,
+        Text                   = "EloHub",
+        TextSize               = 12,
+        TextColor3             = Color3.fromRGB(255, 255, 255),
+        TextTransparency       = 1,
+        ZIndex                 = 52,
+        Parent                 = scrim,
+    })
+    New("UIGradient", {
+        Rotation = 20,
+        Color = ColorSequence.new({
+            ColorSequenceKeypoint.new(0.0, Color3.fromRGB(255, 255, 255)),
+            ColorSequenceKeypoint.new(0.5, Color3.fromRGB(226, 236, 250)),
+            ColorSequenceKeypoint.new(1.0, Color3.fromRGB(168, 192, 226)),
+        }),
+        Parent = logo,
+    })
+
+    local sub = New("TextLabel", {
+        AnchorPoint            = Vector2.new(0.5, 0.5),
+        Position               = UDim2.new(0.5, 0, 0.5, 44),
+        Size                   = UDim2.fromOffset(420, 20),
+        BackgroundTransparency = 1,
+        Font                   = Enum.Font.Gotham,
+        Text                   = "MURDER  MYSTERY  2",
+        TextSize               = 13,
+        TextColor3             = Color3.fromRGB(215, 226, 242),
+        TextTransparency       = 1,
+        ZIndex                 = 52,
+        Parent                 = scrim,
+    })
+
+    local line = New("Frame", {
+        AnchorPoint            = Vector2.new(0.5, 0.5),
+        Position               = UDim2.new(0.5, 0, 0.5, 70),
+        Size                   = UDim2.fromOffset(0, 2),
+        BackgroundColor3       = Color3.fromRGB(255, 255, 255),
+        BackgroundTransparency = 0.2,
+        BorderSizePixel        = 0,
+        ZIndex                 = 52,
+        Parent                 = scrim,
+    })
+    Corner(line, 1)
+
+    Tween(scrim, 0.35, { BackgroundTransparency = 0.28 })
+    Tween(logo, 0.55, { TextSize = 54, TextTransparency = 0 }, Enum.EasingStyle.Back)
+    task.delay(0.25, function()
+        Tween(sub, 0.4, { TextTransparency = 0.05 })
+        Tween(line, 0.55, { Size = UDim2.fromOffset(230, 2) })
+    end)
+    task.delay(0.1, function()
+        Tween(ringStroke, 0.1, { Transparency = 0.4 })
+        Tween(ring, 1.1, { Size = UDim2.fromOffset(340, 340) }, Enum.EasingStyle.Quint)
+        Tween(ringStroke, 1.1, { Transparency = 1 })
+    end)
+    task.delay(0.42, function()
+        Tween(ringStroke2, 0.1, { Transparency = 0.55 })
+        Tween(ring2, 1.2, { Size = UDim2.fromOffset(520, 520) }, Enum.EasingStyle.Quint)
+        Tween(ringStroke2, 1.2, { Transparency = 1 })
+    end)
+
+    task.delay(1.65, function()
+        Tween(logo, 0.35, { TextTransparency = 1, TextSize = 64 })
+        Tween(sub, 0.3, { TextTransparency = 1 })
+        Tween(line, 0.3, { BackgroundTransparency = 1 })
+        Tween(scrim, 0.4, { BackgroundTransparency = 1 })
+        task.delay(0.42, function()
+            scrim:Destroy()
+            if done then done() end
+        end)
+    end)
+end
+
+--======================================================================
+--                            ВЫГРУЗКА
+--======================================================================
+_G.EloHub_Unload = function()
+    if Unloaded then return end
+    Unloaded = true
+    pcall(function() S.Aim.Enabled = false end)
+    pcall(function() RunService:UnbindFromRenderStep("EloHub_Aim") end)
+    pcall(Ragdoll.Off)
+    pcall(Fly.Off)
+    pcall(Walls.Disable)
+    pcall(Speed.Reset)
+    S.Noclip.Enabled = false
+    for plr, _ in pairs(ESP.objects) do pcall(ESP.Remove, plr) end
+    for _, c in ipairs(Conns) do pcall(function() c:Disconnect() end) end
+    Conns = {}
+    pcall(function() GUIROOT:Destroy() end)
+    _G.EloHub_Unload = nil
+end
+
+--======================================================================
+--                             СТАРТ
+--======================================================================
+PlayIntro(function()
+    SetMenu(true)
+    Notify("EloHub загружен", Theme.Accent)
+end)
+
+pcall(function()
+    StarterGui:SetCore("SendNotification", {
+        Title    = "EloHub",
+        Text     = "Murder Mystery 2 — загружено",
+        Duration = 4,
+    })
+end)
