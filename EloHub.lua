@@ -38,13 +38,15 @@ local S = {
     Speed   = { Enabled = false, Value = 32, Mode = "CFrame" },
     Jump    = { Enabled = false, Value = 50 },
     Coins   = {
-        Enabled   = false,
-        Radius    = 400,
-        Delay     = 0.12,
-        Teleport  = false,
-        Return    = true,
-        Mode      = "Авто",
-        Collected = 0,
+        Enabled    = false,
+        Radius     = 400,
+        Delay      = 0.12,
+        Teleport   = false,
+        Return     = true,
+        Mode       = "Авто",
+        FlySpeed   = 120,
+        FlyTimeout = 3,
+        Collected  = 0,
     },
     Safe    = {
         BlockKick = true,
@@ -81,6 +83,7 @@ local S = {
         LoopDelay   = 1,
         AutoMurder  = false,
         AutoSheriff = false,
+        TryRemotes  = true,
     },
     Spin    = { Enabled = false, Power = 12000, Rot = 20000, Move = 22, Hold = true },
     UI      = { Scale = 1, Auto = 1 },
@@ -628,19 +631,46 @@ function Coins.Touch(part)
     return ok
 end
 
+function Coins.FlyToPos(goal, timeout, part)
+    local deadline = os.clock() + (timeout or S.Coins.FlyTimeout)
+    Coins.flying = true
+    while not Unloaded and S.Coins.Enabled do
+        local h = HRP(LP)
+        if not h then break end
+        if part and not part.Parent then break end
+        local delta = goal - h.Position
+        local dist  = delta.Magnitude
+        if dist <= 3.5 then break end
+        if os.clock() > deadline then break end
+        local dt   = task.wait()
+        local step = math.min(S.Coins.FlySpeed * dt, dist)
+        h.CFrame  = CFrame.new(h.Position + delta.Unit * step)
+        h.Velocity = Vector3.zero
+        if part then Coins.Touch(part) end
+    end
+    Coins.flying = false
+    local h = HRP(LP)
+    if h then h.Velocity = Vector3.zero end
+    return true
+end
+
+function Coins.FlyTo(part)
+    local ok = Coins.FlyToPos(part.Position + Vector3.new(0, 2, 0), S.Coins.FlyTimeout, part)
+    Coins.Touch(part)
+    return ok
+end
+
 function Coins.Take(part, hrp)
     local mode = S.Coins.Mode
     if mode == "Касание" or (mode == "Авто" and firetouch and not S.Coins.Teleport) then
         return Coins.Touch(part)
     end
-    if mode == "Телепорт" or S.Coins.Teleport or not firetouch then
-        local h = HRP(LP)
-        if not h then return false end
+    if mode == "Телепорт" or S.Coins.Teleport then
         Safe.MoveTo(CFrame.new(part.Position + Vector3.new(0, 1.5, 0)))
         Coins.Touch(part)
         return true
     end
-    return false
+    return Coins.FlyTo(part)
 end
 
 function Coins.Diagnose()
@@ -673,22 +703,34 @@ function Coins.Loop()
                 local hrp = HRP(LP)
                 local list = Coins.List()
                 if hrp and #list > 0 then
-                    local home = hrp.CFrame
+                    local home  = hrp.CFrame
+                    local base  = hrp.Position
                     local moved = false
+                    table.sort(list, function(a, b)
+                        return (a.Position - base).Magnitude < (b.Position - base).Magnitude
+                    end)
                     for _, part in ipairs(list) do
                         if not S.Coins.Enabled then break end
                         local h = HRP(LP)
                         if not h then break end
                         if part.Parent and (part.Position - h.Position).Magnitude <= S.Coins.Radius then
+                            local before = h.Position
                             if Coins.Take(part, h) then
                                 S.Coins.Collected = S.Coins.Collected + 1
-                                if S.Coins.Mode == "Телепорт" or S.Coins.Teleport then moved = true end
                             end
+                            local after = HRP(LP)
+                            if after and (after.Position - before).Magnitude > 5 then moved = true end
                             task.wait(S.Coins.Delay)
                         end
                     end
                     local back = HRP(LP)
-                    if moved and S.Coins.Return and back then Safe.MoveTo(home) end
+                    if moved and S.Coins.Return and back then
+                        if S.Coins.Mode == "Телепорт" or S.Coins.Teleport then
+                            Safe.MoveTo(home)
+                        else
+                            Coins.FlyToPos(home.Position, 6, nil)
+                        end
+                    end
                 end
             end)
             if not ok then task.wait(0.5) end
@@ -699,7 +741,7 @@ end
 
 local Noclip = {}
 function Noclip.Step()
-    if not S.Noclip.Enabled then return end
+    if not S.Noclip.Enabled and not Coins.flying then return end
     local char = Char(LP)
     if not char then return end
     for _, p in ipairs(char:GetDescendants()) do
@@ -1992,10 +2034,83 @@ local function HitParts(char)
     return out
 end
 
+local function KnownRemote(tool)
+    local kl = tool:FindFirstChild("KnifeLocal") or tool:FindFirstChild("GunLocal")
+    if kl then
+        local cb = kl:FindFirstChild("CreateBeam")
+        if cb then
+            local r = cb:FindFirstChildWhichIsA("RemoteFunction")
+                   or cb:FindFirstChildWhichIsA("RemoteEvent")
+            if r then return r end
+        end
+        local r = kl:FindFirstChildWhichIsA("RemoteFunction", true)
+               or kl:FindFirstChildWhichIsA("RemoteEvent", true)
+        if r then return r end
+    end
+    return tool:FindFirstChildWhichIsA("RemoteFunction", true)
+        or tool:FindFirstChildWhichIsA("RemoteEvent", true)
+end
+
+local function CallRemote(rem, sets)
+    if rem:IsA("RemoteFunction") then
+        for _, a in ipairs(sets) do
+            local ok = pcall(function() rem:InvokeServer(table.unpack(a)) end)
+            if ok then return true end
+        end
+        return false
+    end
+    local fired = false
+    for _, a in ipairs(sets) do
+        pcall(function() rem:FireServer(table.unpack(a)) end)
+        fired = true
+    end
+    return fired
+end
+
+function Combat.Fire(tool, pos, plr)
+    if not tool then return false end
+    pcall(function() tool:Activate() end)
+    if not pos then return false end
+    local target = plr and Char(plr) or nil
+    local sets = {
+        { 1, pos },
+        { pos },
+        { 1, pos, target },
+        { target },
+        { "Shoot", pos },
+    }
+    local main = KnownRemote(tool)
+    local fired = false
+    if main then fired = CallRemote(main, sets) end
+    if not fired and S.Kill.TryRemotes then
+        for _, d in ipairs(tool:GetDescendants()) do
+            if d ~= main and (d:IsA("RemoteFunction") or d:IsA("RemoteEvent")) then
+                if CallRemote(d, sets) then fired = true break end
+            end
+        end
+    end
+    return fired
+end
+
+function Combat.ToolInfo()
+    local tool = GetTool("Gun") or GetTool("Knife")
+    if not tool then return "Оружие не найдено: ни ножа, ни револьвера в руках и рюкзаке." end
+    local lines = { "Оружие: <b>" .. tool.Name .. "</b>" }
+    local all = tool:GetDescendants()
+    for i, d in ipairs(all) do
+        if i <= 16 then
+            table.insert(lines, d.ClassName .. " : " .. d.Name)
+        end
+    end
+    if #all > 16 then table.insert(lines, "... ещё " .. (#all - 16) .. " объектов") end
+    return table.concat(lines, "\n")
+end
+
 local function SwingAt(tool, plr)
     local char = Char(plr)
     if not tool or not char then return end
-    pcall(function() tool:Activate() end)
+    local aim = char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Head")
+    Combat.Fire(tool, aim and aim.Position or nil, plr)
     local handle = tool:FindFirstChild("Handle") or tool:FindFirstChildWhichIsA("BasePart")
     if handle and firetouch then
         for _, p in ipairs(HitParts(char)) do
@@ -2081,13 +2196,14 @@ function Combat.ShootMurderer(silent)
     end
     Camera.CFrame = CFrame.lookAt(Camera.CFrame.Position, part.Position)
     task.wait(0.05)
-    pcall(function() gun:Activate() end)
-    for _, d in ipairs(gun:GetDescendants()) do
-        if d:IsA("RemoteEvent") then
-            pcall(function() d:FireServer(part.Position) end)
-        elseif d:IsA("RemoteFunction") then
-            pcall(function() d:InvokeServer(part.Position) end)
-        end
+    local fired = Combat.Fire(gun, part.Position, m)
+    if not fired then
+        task.wait(0.1)
+        local again = AimPart(m)
+        if again then fired = Combat.Fire(gun, again.Position, m) end
+    end
+    if not fired and not silent then
+        Notify("Ремоут выстрела не сработал - нажми «Тест оружия»", RED)
     end
     if S.Kill.TPShot and S.Kill.Return then
         task.wait(0.2)
@@ -2517,7 +2633,13 @@ KillT:Button("СТОП (прервать кил-олл)", function()
     Combat.Stop()
     Notify("Остановлено", Color3.fromRGB(220, 90, 90))
 end)
-KillT:Label("Кил-олл работает только когда ты <b>убийца</b>: телепорт к каждому и удар ножом. Авто-режим за <b>шерифа</b> сам наводит револьвер на мардера и стреляет.")
+KillT:Toggle("Пробовать все ремоуты оружия", true, function(v) S.Kill.TryRemotes = v end)
+local ToolDiag = KillT:Label("Если выстрел не проходит — нажми «Тест оружия» и пришли мне этот список.")
+KillT:Button("Тест оружия", function()
+    ToolDiag.Text = Combat.ToolInfo()
+    Notify("Структура оружия выведена ниже")
+end)
+KillT:Label("Кил-олл работает только когда ты <b>убийца</b>: телепорт к каждому и удар ножом. Авто-режим за <b>шерифа</b> наводит револьвер на мардера, дёргает ремоут выстрела и жмёт Activate.")
 
 KillT:Section("Мега-крутилка")
 table.insert(Panic, KillT:Toggle("Мега-крутилка (отбрасывает игроков)", false, function(v)
@@ -2538,10 +2660,12 @@ table.insert(Panic, MiscT:Toggle("Авто-сбор монет", false, function
 end))
 MiscT:Slider("Радиус сбора", 50, 2000, 400, 0, function(v) S.Coins.Radius = v end)
 MiscT:Slider("Задержка между монетами", 0.02, 1, 0.12, 2, function(v) S.Coins.Delay = v end)
-MiscT:Dropdown("Способ сбора", { "Авто", "Касание", "Телепорт" }, "Авто", function(v)
+MiscT:Dropdown("Способ сбора", { "Авто", "Касание", "Полёт", "Телепорт" }, "Авто", function(v)
     S.Coins.Mode = v
     S.Coins.Teleport = (v == "Телепорт")
 end)
+MiscT:Slider("Скорость полёта к монете", 40, 400, 120, 0, function(v) S.Coins.FlySpeed = v end)
+MiscT:Slider("Лимит времени на монету", 1, 8, 3, 1, function(v) S.Coins.FlyTimeout = v end)
 MiscT:Toggle("Возвращаться на место после сбора", true, function(v) S.Coins.Return = v end)
 local CoinLabel2 = MiscT:Label("Собрано за сессию: <b>0</b>")
 local CoinDiag = MiscT:Label("Если монеты не собираются — нажми «Тест монет»: покажет, что скрипт реально видит на карте.")
@@ -2552,8 +2676,9 @@ MiscT:Button("Тест монет", function()
         .. "</b>\nfiretouchinterest: <b>" .. (d.firetouch and "есть" or "нет") .. "</b>"
     Notify("Монет: " .. d.total .. ", рядом: " .. d.near, d.total > 0 and nil or RED)
 end)
-MiscT:Label(firetouch and "Метод <b>Касание</b> доступен: монеты берутся без телепорта."
-                       or "В этом эксплойте нет <b>firetouchinterest</b> — выбери способ <b>Телепорт</b>.")
+MiscT:Label(firetouch and "Метод <b>Касание</b> доступен: монеты берутся на месте, без движения."
+                       or "В этом эксплойте нет <b>firetouchinterest</b> — работает режим <b>Полёт</b>.")
+MiscT:Label("<b>Полёт</b> — персонаж плавно летит к каждой монете сквозь стены (ноклип включается сам на время полёта) и возвращается назад. <b>Телепорт</b> — мгновенный рывок, ловится античитом чаще.")
 
 MiscT:Section("Тело")
 table.insert(Panic, MiscT:Toggle("Фейк рагдолл", false, function(v)
